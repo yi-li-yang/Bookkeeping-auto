@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1400">
+<title>Bookkeeping Auto — Preview</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1400px;
+    height: 860px;
+    background: #0f172a;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    color: #f1f5f9;
+    overflow: hidden;
+  }
+
+  /* NAV */
+  nav {
+    height: 48px;
+    background: #1e293b;
+    border-bottom: 1px solid #334155;
+    display: flex;
+    align-items: center;
+    padding: 0 24px;
+    gap: 32px;
+  }
+  .logo {
+    font-size: 15px;
+    font-weight: 700;
+    color: #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .logo-icon {
+    width: 24px; height: 24px;
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px;
+  }
+  .nav-tabs { display: flex; gap: 4px; margin-left: 16px; }
+  .nav-tab {
+    padding: 5px 14px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: #94a3b8;
+    cursor: pointer;
+  }
+  .nav-tab.active { background: #334155; color: #f1f5f9; }
+  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .date-range {
+    background: #0f172a;
+    border: 1px solid #334155;
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 12px;
+    color: #94a3b8;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .btn-ingest {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  /* LAYOUT */
+  .main {
+    padding: 20px 24px;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto;
+    gap: 16px;
+    height: calc(860px - 48px);
+  }
+
+  /* CARD */
+  .card {
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 16px 18px;
+    overflow: hidden;
+  }
+  .card-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 14px;
+  }
+
+  /* STAT BADGES */
+  .stats-row {
+    display: flex;
+    gap: 12px;
+    grid-column: 1 / -1;
+  }
+  .stat-card {
+    flex: 1;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 14px 18px;
+  }
+  .stat-label { font-size: 11px; color: #64748b; margin-bottom: 4px; }
+  .stat-value { font-size: 22px; font-weight: 700; }
+  .stat-value.green { color: #10b981; }
+  .stat-value.red { color: #f87171; }
+  .stat-value.indigo { color: #818cf8; }
+  .stat-value.white { color: #f1f5f9; }
+  .stat-delta { font-size: 11px; color: #64748b; margin-top: 2px; }
+  .stat-delta span { color: #10b981; }
+
+  /* TREEMAP */
+  .treemap-wrap { position: relative; height: 180px; }
+  .treemap {
+    width: 100%; height: 100%;
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 3px;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .tm { display: flex; align-items: center; justify-content: center; flex-direction: column; border-radius: 4px; }
+  .tm-label { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); }
+  .tm-val { font-size: 11px; color: rgba(255,255,255,0.6); }
+  .tm-rent { background: #6366f1; grid-row: 1 / 3; }
+  .tm-food { background: #0ea5e9; }
+  .tm-transport { background: #f59e0b; }
+  .tm-savings { background: #10b981; grid-column: 1; }
+  .tm-misc { background: #8b5cf6; }
+  .tm-health { background: #ec4899; }
+
+  /* BAR CHART */
+  .bar-chart { display: flex; align-items: flex-end; gap: 10px; height: 150px; padding-top: 8px; }
+  .bar-group { display: flex; gap: 3px; align-items: flex-end; flex: 1; }
+  .bar {
+    flex: 1;
+    border-radius: 4px 4px 0 0;
+    min-width: 18px;
+  }
+  .bar.income { background: #10b981; }
+  .bar.expense { background: #f87171; }
+  .bar-x-labels { display: flex; gap: 10px; margin-top: 6px; }
+  .bar-x-label { flex: 1; text-align: center; font-size: 10px; color: #64748b; }
+  .chart-legend { display: flex; gap: 14px; margin-bottom: 10px; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #94a3b8; }
+  .legend-dot { width: 8px; height: 8px; border-radius: 2px; }
+
+  /* LINE CHART */
+  .line-chart-wrap { height: 150px; position: relative; }
+
+  /* TRANSACTION TABLE */
+  .tx-table { width: 100%; border-collapse: collapse; }
+  .tx-table th {
+    font-size: 10px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 8px 8px;
+    text-align: left;
+    border-bottom: 1px solid #334155;
+  }
+  .tx-table td {
+    font-size: 12px;
+    padding: 7px 8px;
+    color: #cbd5e1;
+    border-bottom: 1px solid #1e293b;
+  }
+  .tx-table tr:last-child td { border-bottom: none; }
+  .tx-amount.pos { color: #10b981; font-weight: 600; }
+  .tx-amount.neg { color: #f87171; font-weight: 600; }
+  .badge {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .badge-indigo { background: rgba(99,102,241,0.2); color: #818cf8; }
+  .badge-green  { background: rgba(16,185,129,0.2); color: #34d399; }
+  .badge-amber  { background: rgba(245,158,11,0.2); color: #fbbf24; }
+  .badge-sky    { background: rgba(14,165,233,0.2); color: #38bdf8; }
+  .badge-pink   { background: rgba(236,72,153,0.2); color: #f472b6; }
+
+  /* INSIGHTS CARD */
+  .insight-block {
+    background: rgba(99,102,241,0.08);
+    border: 1px solid rgba(99,102,241,0.25);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    color: #c7d2fe;
+    line-height: 1.5;
+  }
+  .insight-block strong { color: #a5b4fc; }
+
+  .anomaly-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 0;
+    border-bottom: 1px solid #334155;
+    font-size: 12px;
+  }
+  .anomaly-row:last-child { border-bottom: none; }
+  .severity { font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+  .sev-high { background: rgba(239,68,68,0.2); color: #f87171; }
+  .sev-med  { background: rgba(245,158,11,0.2); color: #fbbf24; }
+</style>
+</head>
+<body>
+
+<!-- NAV -->
+<nav>
+  <div class="logo">
+    <div class="logo-icon">$</div>
+    Bookkeeping Auto
+  </div>
+  <div class="nav-tabs">
+    <div class="nav-tab active">Overview</div>
+    <div class="nav-tab">Trends</div>
+    <div class="nav-tab">Investments</div>
+    <div class="nav-tab">Insights</div>
+    <div class="nav-tab">Summary</div>
+  </div>
+  <div class="nav-right">
+    <div class="date-range">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#64748b" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      Jan 2025 – Dec 2025
+    </div>
+    <button class="btn-ingest">&#8593; Ingest Files</button>
+  </div>
+</nav>
+
+<!-- MAIN GRID -->
+<div class="main">
+
+  <!-- STAT ROW -->
+  <div class="stats-row">
+    <div class="stat-card">
+      <div class="stat-label">Total Income</div>
+      <div class="stat-value green">£84,320</div>
+      <div class="stat-delta"><span>+12.4%</span> vs last year</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Total Expenses</div>
+      <div class="stat-value red">£61,840</div>
+      <div class="stat-delta"><span style="color:#f87171">+3.1%</span> vs last year</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Net Savings</div>
+      <div class="stat-value indigo">£22,480</div>
+      <div class="stat-delta"><span>26.7%</span> savings rate</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Transactions</div>
+      <div class="stat-value white">1,247</div>
+      <div class="stat-delta"><span>98.2%</span> categorised</div>
+    </div>
+  </div>
+
+  <!-- TREEMAP -->
+  <div class="card">
+    <div class="card-title">Spending by Category</div>
+    <div class="treemap-wrap">
+      <div class="treemap">
+        <div class="tm tm-rent" style="grid-row:1/3; grid-column:1;">
+          <div class="tm-label">Housing</div>
+          <div class="tm-val">£18,400 · 30%</div>
+        </div>
+        <div class="tm tm-food">
+          <div class="tm-label">Food & Dining</div>
+          <div class="tm-val">£9,200</div>
+        </div>
+        <div class="tm tm-transport">
+          <div class="tm-label">Transport</div>
+          <div class="tm-val">£4,100</div>
+        </div>
+        <div class="tm tm-savings" style="grid-column:2;">
+          <div class="tm-label">Subscriptions</div>
+          <div class="tm-val">£2,340</div>
+        </div>
+        <div class="tm tm-misc" style="grid-column:3;">
+          <div class="tm-label">Shopping</div>
+          <div class="tm-val">£6,800</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- INCOME vs EXPENSES -->
+  <div class="card">
+    <div class="card-title">Income vs Expenses</div>
+    <div class="chart-legend">
+      <div class="legend-item"><div class="legend-dot" style="background:#10b981"></div>Income</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f87171"></div>Expenses</div>
+    </div>
+    <div class="bar-chart">
+      <!-- Jan -->
+      <div class="bar-group">
+        <div class="bar income" style="height:85px"></div>
+        <div class="bar expense" style="height:70px"></div>
+      </div>
+      <!-- Feb -->
+      <div class="bar-group">
+        <div class="bar income" style="height:80px"></div>
+        <div class="bar expense" style="height:65px"></div>
+      </div>
+      <!-- Mar -->
+      <div class="bar-group">
+        <div class="bar income" style="height:90px"></div>
+        <div class="bar expense" style="height:72px"></div>
+      </div>
+      <!-- Apr -->
+      <div class="bar-group">
+        <div class="bar income" style="height:82px"></div>
+        <div class="bar expense" style="height:80px"></div>
+      </div>
+      <!-- May -->
+      <div class="bar-group">
+        <div class="bar income" style="height:88px"></div>
+        <div class="bar expense" style="height:60px"></div>
+      </div>
+      <!-- Jun -->
+      <div class="bar-group">
+        <div class="bar income" style="height:95px"></div>
+        <div class="bar expense" style="height:68px"></div>
+      </div>
+      <!-- Jul -->
+      <div class="bar-group">
+        <div class="bar income" style="height:100px"></div>
+        <div class="bar expense" style="height:75px"></div>
+      </div>
+      <!-- Aug -->
+      <div class="bar-group">
+        <div class="bar income" style="height:92px"></div>
+        <div class="bar expense" style="height:78px"></div>
+      </div>
+      <!-- Sep -->
+      <div class="bar-group">
+        <div class="bar income" style="height:86px"></div>
+        <div class="bar expense" style="height:66px"></div>
+      </div>
+      <!-- Oct -->
+      <div class="bar-group">
+        <div class="bar income" style="height:110px"></div>
+        <div class="bar expense" style="height:62px"></div>
+      </div>
+      <!-- Nov -->
+      <div class="bar-group">
+        <div class="bar income" style="height:130px"></div>
+        <div class="bar expense" style="height:88px"></div>
+      </div>
+      <!-- Dec -->
+      <div class="bar-group">
+        <div class="bar income" style="height:120px"></div>
+        <div class="bar expense" style="height:95px"></div>
+      </div>
+    </div>
+    <div class="bar-x-labels">
+      <div class="bar-x-label">J</div><div class="bar-x-label">F</div>
+      <div class="bar-x-label">M</div><div class="bar-x-label">A</div>
+      <div class="bar-x-label">M</div><div class="bar-x-label">J</div>
+      <div class="bar-x-label">J</div><div class="bar-x-label">A</div>
+      <div class="bar-x-label">S</div><div class="bar-x-label">O</div>
+      <div class="bar-x-label">N</div><div class="bar-x-label">D</div>
+    </div>
+  </div>
+
+  <!-- AI INSIGHTS -->
+  <div class="card">
+    <div class="card-title">AI Insights</div>
+    <div class="insight-block">
+      <strong>November summary</strong> — Strong month: income up 28% driven by bonus. Dining spend was <strong>£940</strong>, your highest ever — 2.3σ above your rolling average. Savings rate reached <strong>34%</strong>.
+    </div>
+    <div style="margin-top:4px;">
+      <div class="anomaly-row">
+        <div>
+          <div style="font-size:12px;color:#e2e8f0">Amazon — Electronics</div>
+          <div style="font-size:10px;color:#64748b">Nov 18 · z-score 3.4</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:12px;color:#f87171">£420</div>
+          <span class="severity sev-high">HIGH</span>
+        </div>
+      </div>
+      <div class="anomaly-row">
+        <div>
+          <div style="font-size:12px;color:#e2e8f0">Deliveroo</div>
+          <div style="font-size:10px;color:#64748b">Nov 23 · z-score 2.1</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:12px;color:#f87171">£68</div>
+          <span class="severity sev-med">MED</span>
+        </div>
+      </div>
+      <div class="anomaly-row">
+        <div>
+          <div style="font-size:12px;color:#e2e8f0">Shell Petrol</div>
+          <div style="font-size:10px;color:#64748b">Dec 02 · z-score 2.0</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="font-size:12px;color:#f87171">£94</div>
+          <span class="severity sev-med">MED</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- NET WORTH -->
+  <div class="card" style="grid-column:1/3;">
+    <div class="card-title">Net Worth Over Time</div>
+    <div style="position:relative;height:170px;">
+      <svg width="100%" height="170" viewBox="0 0 800 170" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="gInvest" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#6366f1" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#6366f1" stop-opacity="0.05"/>
+          </linearGradient>
+          <linearGradient id="gBank" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#10b981" stop-opacity="0.5"/>
+            <stop offset="100%" stop-color="#10b981" stop-opacity="0.05"/>
+          </linearGradient>
+          <linearGradient id="gCC" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#f87171" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#f87171" stop-opacity="0.05"/>
+          </linearGradient>
+        </defs>
+        <!-- CC area (bottom negative offset) -->
+        <path d="M0,155 C60,155 120,158 180,157 C240,156 300,160 360,158 C420,156 480,162 540,160 C600,158 660,162 720,160 L780,158 L780,170 L0,170 Z"
+              fill="url(#gCC)" />
+        <!-- Bank area -->
+        <path d="M0,120 C60,118 120,115 180,112 C240,109 300,108 360,105 C420,102 480,100 540,95 C600,90 660,85 720,80 L780,75 L780,170 L0,170 Z"
+              fill="url(#gBank)" />
+        <!-- Investment area -->
+        <path d="M0,90 C60,85 120,80 180,72 C240,64 300,60 360,52 C420,44 480,38 540,30 C600,22 660,16 720,10 L780,6 L780,170 L0,170 Z"
+              fill="url(#gInvest)" />
+        <!-- Investment line -->
+        <path d="M0,90 C60,85 120,80 180,72 C240,64 300,60 360,52 C420,44 480,38 540,30 C600,22 660,16 720,10 L780,6"
+              fill="none" stroke="#818cf8" stroke-width="2"/>
+        <!-- Bank line -->
+        <path d="M0,120 C60,118 120,115 180,112 C240,109 300,108 360,105 C420,102 480,100 540,95 C600,90 660,85 720,80 L780,75"
+              fill="none" stroke="#34d399" stroke-width="2"/>
+      </svg>
+      <!-- X labels -->
+      <div style="display:flex;justify-content:space-between;padding:0 4px;margin-top:-4px;">
+        <span style="font-size:10px;color:#64748b">Jan</span>
+        <span style="font-size:10px;color:#64748b">Mar</span>
+        <span style="font-size:10px;color:#64748b">May</span>
+        <span style="font-size:10px;color:#64748b">Jul</span>
+        <span style="font-size:10px;color:#64748b">Sep</span>
+        <span style="font-size:10px;color:#64748b">Nov</span>
+        <span style="font-size:10px;color:#64748b">Dec</span>
+      </div>
+      <div style="position:absolute;top:6px;right:0;display:flex;gap:14px;">
+        <div class="legend-item"><div class="legend-dot" style="background:#818cf8"></div>Investments</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#34d399"></div>Bank</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#f87171"></div>Credit Card</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRANSACTIONS -->
+  <div class="card" style="grid-column:3/4; grid-row:3/4;">
+    <div class="card-title">Recent Transactions</div>
+    <table class="tx-table">
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th>Category</th>
+          <th style="text-align:right">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>
+            <div style="color:#e2e8f0;font-size:12px">Monzo Salary</div>
+            <div style="color:#64748b;font-size:10px">Dec 28</div>
+          </td>
+          <td><span class="badge badge-green">Income</span></td>
+          <td class="tx-amount pos" style="text-align:right">+£5,200</td>
+        </tr>
+        <tr>
+          <td>
+            <div style="color:#e2e8f0;font-size:12px">Vanguard ISA</div>
+            <div style="color:#64748b;font-size:10px">Dec 27</div>
+          </td>
+          <td><span class="badge badge-indigo">Investment</span></td>
+          <td class="tx-amount neg" style="text-align:right">-£1,000</td>
+        </tr>
+        <tr>
+          <td>
+            <div style="color:#e2e8f0;font-size:12px">Waitrose</div>
+            <div style="color:#64748b;font-size:10px">Dec 26</div>
+          </td>
+          <td><span class="badge badge-sky">Groceries</span></td>
+          <td class="tx-amount neg" style="text-align:right">-£84</td>
+        </tr>
+        <tr>
+          <td>
+            <div style="color:#e2e8f0;font-size:12px">TfL Contactless</div>
+            <div style="color:#64748b;font-size:10px">Dec 24</div>
+          </td>
+          <td><span class="badge badge-amber">Transport</span></td>
+          <td class="tx-amount neg" style="text-align:right">-£12</td>
+        </tr>
+        <tr>
+          <td>
+            <div style="color:#e2e8f0;font-size:12px">Netflix</div>
+            <div style="color:#64748b;font-size:10px">Dec 22</div>
+          </td>
+          <td><span class="badge badge-pink">Subscriptions</span></td>
+          <td class="tx-amount neg" style="text-align:right">-£18</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+</div>
+</body>
+</html>
