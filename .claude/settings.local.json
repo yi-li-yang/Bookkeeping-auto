@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker exec bookkeeping-auto-backend-1 python3 -c \":*)",
+      "Bash(docker-compose build:*)",
+      "Bash(curl -s -X POST http://localhost:8000/api/ingest)",
+      "Bash(curl -s http://localhost:8000/api/investments/summary)"
+    ]
+  }
+}
