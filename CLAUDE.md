@@ -35,7 +35,7 @@ docker-compose up --build
 
 ## Ingest files
 
-1. Copy CSV/PDF bank statements into `data/input/`
+1. Copy CSV/PDF bank statements into `data/input/`, or use API to retrieve.
 2. In the dashboard, click **⬆ Ingest Files**
    — or via CLI: `curl -X POST http://localhost:8000/api/ingest`
 3. Files are processed only once; re-running skips already-processed files
