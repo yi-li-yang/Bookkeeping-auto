@@ -13,7 +13,6 @@ import WhatIf from "./components/WhatIf";
 import AnnualSummary from "./components/AnnualSummary";
 import DataQuality from "./components/DataQuality";
 import MonthComparison from "./components/MonthComparison";
-import { triggerIngest, IngestResponse } from "./api/client";
 
 type Tab = "overview" | "trends" | "investments" | "insights" | "summary";
 
@@ -25,48 +24,17 @@ const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: "summary",      label: "Summary",      desc: "Annual review, data quality & comparison" },
 ];
 
+const START_ALL = "2000-01-01";
+const END_ALL = "2099-12-31";
+
 export default function App() {
-  const now = new Date();
-  const defaultStart = `${now.getFullYear() - 1}-01-01`;
-  const defaultEnd = `${now.getFullYear()}-12-31`;
-
-  const [start, setStart] = useState(defaultStart);
-  const [end, setEnd] = useState(defaultEnd);
   const [tab, setTab] = useState<Tab>("overview");
-  const [ingesting, setIngesting] = useState(false);
-  const [ingestResult, setIngestResult] = useState<IngestResponse | null>(null);
-  const [ingestError, setIngestError] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
-
-  const handleIngest = async () => {
-    setIngesting(true);
-    setIngestResult(null);
-    setIngestError(null);
-    try {
-      const result = await triggerIngest();
-      setIngestResult(result);
-      setRefreshKey((k) => k + 1);
-    } catch (err: any) {
-      setIngestError(err?.response?.data?.detail ?? err.message ?? "Unknown error");
-    } finally {
-      setIngesting(false);
-    }
-  };
 
   return (
     <div style={{ minHeight: "100vh", background: "#f5f7fa" }}>
       {/* Navbar */}
       <nav style={navbar}>
         <span style={logo}>📊 Bookkeeping Auto</span>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <label style={navLabel}>From</label>
-          <input type="date" style={dateInput} value={start} onChange={(e) => setStart(e.target.value)} />
-          <label style={navLabel}>To</label>
-          <input type="date" style={dateInput} value={end} onChange={(e) => setEnd(e.target.value)} />
-          <button style={ingestBtn} onClick={handleIngest} disabled={ingesting}>
-            {ingesting ? "Processing…" : "⬆ Ingest Files"}
-          </button>
-        </div>
       </nav>
 
       {/* Tab bar */}
@@ -83,37 +51,21 @@ export default function App() {
         ))}
       </div>
 
-      {/* Ingest banners */}
-      {ingestResult && (
-        <div style={banner("#d1fae5", "#065f46")}>
-          Ingested {ingestResult.processed} file(s) — {ingestResult.files.reduce((s, f) => s + f.row_count, 0)} transactions.
-          {ingestResult.errors > 0 && ` ${ingestResult.errors} error(s).`}
-          {ingestResult.skipped > 0 && ` ${ingestResult.skipped} skipped.`}
-          <button style={closeBtn} onClick={() => setIngestResult(null)}>✗</button>
-        </div>
-      )}
-      {ingestError && (
-        <div style={banner("#fee2e2", "#991b1b")}>
-          Ingest error: {ingestError}
-          <button style={closeBtn} onClick={() => setIngestError(null)}>✗</button>
-        </div>
-      )}
-
       {/* Main content */}
-      <main style={mainStyle} key={refreshKey}>
+      <main style={mainStyle}>
 
         {/* Tier 1 — Overview */}
         {tab === "overview" && (
           <>
             <div style={grid2}>
-              <SpendingBreakdown start={start} end={end} />
-              <IncomeVsExpenses start={start} end={end} />
+              <SpendingBreakdown start={START_ALL} end={END_ALL} />
+              <IncomeVsExpenses start={START_ALL} end={END_ALL} />
             </div>
             <div style={row}>
-              <CashFlowWaterfall start={start} end={end} />
+              <CashFlowWaterfall start={START_ALL} end={END_ALL} />
             </div>
             <div style={row}>
-              <TransactionTable start={start} end={end} />
+              <TransactionTable start={START_ALL} end={END_ALL} />
             </div>
           </>
         )}
@@ -122,7 +74,7 @@ export default function App() {
         {tab === "trends" && (
           <>
             <div style={row}>
-              <CategoryTrends start={start} end={end} />
+              <CategoryTrends start={START_ALL} end={END_ALL} />
             </div>
             <div style={grid2}>
               <RecurringExpenses />
@@ -146,7 +98,7 @@ export default function App() {
               <Projection />
             </div>
             <div style={row}>
-              <WhatIf start={start} end={end} />
+              <WhatIf start={START_ALL} end={END_ALL} />
             </div>
           </>
         )}
@@ -181,26 +133,6 @@ const navbar: React.CSSProperties = {
   gap: 12,
 };
 const logo: React.CSSProperties = { fontSize: 18, fontWeight: 700, letterSpacing: "-0.3px" };
-const navLabel: React.CSSProperties = { fontSize: 13, color: "#94a3b8" };
-const dateInput: React.CSSProperties = {
-  border: "1px solid #334155",
-  background: "#0f172a",
-  color: "#fff",
-  borderRadius: 6,
-  padding: "5px 8px",
-  fontSize: 13,
-  outline: "none",
-};
-const ingestBtn: React.CSSProperties = {
-  background: "#4f86c6",
-  color: "#fff",
-  border: "none",
-  borderRadius: 6,
-  padding: "7px 14px",
-  fontSize: 13,
-  fontWeight: 600,
-  cursor: "pointer",
-};
 const tabBar: React.CSSProperties = {
   background: "#fff",
   borderBottom: "1px solid #e2e8f0",
@@ -228,21 +160,3 @@ const grid2: React.CSSProperties = {
   marginBottom: 24,
 };
 const row: React.CSSProperties = { marginBottom: 24 };
-const banner = (bg: string, color: string): React.CSSProperties => ({
-  background: bg,
-  color,
-  padding: "10px 32px",
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  fontSize: 13,
-  fontWeight: 500,
-});
-const closeBtn: React.CSSProperties = {
-  marginLeft: "auto",
-  background: "transparent",
-  border: "none",
-  cursor: "pointer",
-  fontSize: 14,
-  color: "inherit",
-};

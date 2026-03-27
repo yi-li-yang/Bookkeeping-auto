@@ -71,8 +71,8 @@ export const fetchIncomeVsExpenses = (params?: Record<string, string>) =>
 export const fetchCashflowWaterfall = (params?: Record<string, string>) =>
   api.get<WaterfallRow[]>("/analytics/cashflow-waterfall", { params }).then((r) => r.data);
 
-export const triggerIngest = () =>
-  api.post<IngestResponse>("/ingest").then((r) => r.data);
+export const triggerIngest = (force = false) =>
+  api.post<IngestResponse>("/ingest", null, { params: { force } }).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
 // Tier 2 — Trend & Pattern Analysis

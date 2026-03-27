@@ -7,7 +7,7 @@ services:
       - .env
     environment:
       - DB_PATH=/app/data/bookkeeping.db
-      - INPUT_DIR=/app/data/input
+      - INPUT_DIR=/app/data
     ports:
       - "8000:8000"
     restart: unless-stopped

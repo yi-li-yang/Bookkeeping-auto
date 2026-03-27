@@ -1,8 +1,10 @@
 # Automated Statement Downloader — Monzo & Trading 212
 
+Try to automate: Monzo, Chase, Trading212
+
 ## Project Overview
 
-Build a Python CLI tool that automatically downloads transaction data / statements from **Monzo** (personal bank) and **Trading 212** (investment platform) APIs, outputting structured CSV files to a local directory.
+Build a Python CLI tool that automatically downloads transaction data / statements from APIs, outputting structured CSV files to a local directory.
 
 The tool should be runnable on-demand or via cron. It must handle auth token persistence, refresh logic, rate limits, and the 90-day SCA restriction on Monzo gracefully.
 

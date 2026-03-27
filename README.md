@@ -6,7 +6,7 @@ Automatic bookkeeping and personal finance dashboard — ingest bank/credit card
 
 ## Summary
 
-Drop CSV or PDF bank statements into a folder. The tool uses Claude to detect columns, parse transactions, and assign categories. Results appear in a web dashboard with five tiers of analysis: from basic spending breakdowns right through to AI-generated summaries, cash flow projections, and what-if scenario planning.
+Drop CSV or PDF bank statements into a folder, or use API to retrieve statements automatically. The tool uses Claude to detect columns, parse transactions, and assign categories. Results appear in a web dashboard with five tiers of analysis: from basic spending breakdowns right through to AI-generated summaries, cash flow projections, and what-if scenario planning.
 
 ## How to run
 
