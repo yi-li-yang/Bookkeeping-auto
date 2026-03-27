@@ -13,8 +13,10 @@ import WhatIf from "./components/WhatIf";
 import AnnualSummary from "./components/AnnualSummary";
 import DataQuality from "./components/DataQuality";
 import MonthComparison from "./components/MonthComparison";
+import DiningComparison from "./components/DiningComparison";
+import CreditCardDetails from "./components/CreditCardDetails";
 
-type Tab = "overview" | "trends" | "investments" | "insights" | "summary";
+type Tab = "overview" | "trends" | "investments" | "insights" | "summary" | "cards";
 
 const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: "overview",     label: "Overview",     desc: "Spending, income & transactions" },
@@ -22,6 +24,7 @@ const TABS: { key: Tab; label: string; desc: string }[] = [
   { key: "investments",  label: "Investments",  desc: "Net worth & portfolio" },
   { key: "insights",     label: "Insights",     desc: "AI summary, projections & what-if" },
   { key: "summary",      label: "Summary",      desc: "Annual review, data quality & comparison" },
+  { key: "cards",        label: "Cards",        desc: "Credit card details, limits & promotions" },
 ];
 
 const START_ALL = "2000-01-01";
@@ -80,6 +83,9 @@ export default function App() {
               <RecurringExpenses />
               <SpendingVelocity />
             </div>
+            <div style={row}>
+              <DiningComparison start={START_ALL} end={END_ALL} />
+            </div>
           </>
         )}
 
@@ -114,6 +120,12 @@ export default function App() {
               <MonthComparison />
             </div>
           </>
+        )}
+        {/* Cards */}
+        {tab === "cards" && (
+          <div style={row}>
+            <CreditCardDetails />
+          </div>
         )}
       </main>
     </div>

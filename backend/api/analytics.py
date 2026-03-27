@@ -521,6 +521,51 @@ def data_quality(db: Session = Depends(get_db)):
     }
 
 
+@router.get("/dining-comparison")
+def dining_comparison(
+    start: Optional[str] = Query(None),
+    end: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Monthly comparison of dining-out spend vs groceries/home-cooking spend."""
+    DINING_OUT_KEYWORDS = ("dining", "dine", "restaurant", "takeaway", "take-away", "takeout", "eat out", "cafe", "coffee shop", "fast food", "bar ")
+    HOME_FOOD_KEYWORDS = ("grocer", "supermarket", "home cook", "food shop", "wholesale", "costco", "trader joe", "whole food", "aldi", "lidl", "tesco", "sainsbury", "morrisons", "waitrose", "walmart", "kroger")
+
+    month_expr = func.substr(Transaction.date, 1, 7)
+    q = db.query(
+        month_expr.label("month"),
+        Transaction.category,
+        func.sum(Transaction.amount).label("total"),
+    ).filter(Transaction.amount < 0)
+    q = _month_filter(q, start, end)
+    rows = q.group_by(month_expr, Transaction.category).order_by(month_expr).all()
+
+    months: dict = {}
+    for r in rows:
+        cat = (r.category or "").lower()
+        total = abs(r.total or 0)
+        m = r.month
+        if m not in months:
+            months[m] = {"month": m, "dining_out": 0.0, "home_food": 0.0}
+
+        if any(k in cat for k in DINING_OUT_KEYWORDS):
+            months[m]["dining_out"] += total
+        elif any(k in cat for k in HOME_FOOD_KEYWORDS):
+            months[m]["home_food"] += total
+
+    result = [
+        {
+            "month": v["month"],
+            "dining_out": round(v["dining_out"], 2),
+            "home_food": round(v["home_food"], 2),
+            "ratio": round(v["dining_out"] / v["home_food"], 2) if v["home_food"] > 0 else None,
+        }
+        for v in sorted(months.values(), key=lambda x: x["month"])
+        if v["dining_out"] > 0 or v["home_food"] > 0
+    ]
+    return result
+
+
 @router.get("/month-comparison")
 def month_comparison(
     month1: str = Query(...),

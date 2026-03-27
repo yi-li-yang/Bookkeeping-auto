@@ -45,12 +45,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from api import ingestion, transactions, analytics, investments  # noqa: E402
+from api import ingestion, transactions, analytics, investments, credit_cards  # noqa: E402
 
 app.include_router(ingestion.router)
 app.include_router(transactions.router)
 app.include_router(analytics.router)
 app.include_router(investments.router)
+app.include_router(credit_cards.router)
 
 
 @app.get("/health")

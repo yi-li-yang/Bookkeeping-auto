@@ -37,6 +37,23 @@ class Transaction(Base):
     source_file = relationship("SourceFile", back_populates="transactions")
 
 
+class CreditCard(Base):
+    """
+    Stores manually-entered metadata for each credit card (e.g. limit, promo date, FX fee).
+    account_name should match the account_name stored on Transaction rows for this card.
+    """
+    __tablename__ = "credit_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_name = Column(String, unique=True, nullable=False)   # must match Transaction.account_name
+    card_name = Column(String, nullable=True)                    # display name e.g. "Chase Sapphire Preferred"
+    credit_limit = Column(Float, nullable=True)
+    promotion_end_date = Column(String, nullable=True)           # YYYY-MM-DD
+    fx_fee_pct = Column(Float, nullable=True)                    # e.g. 3.0 = 3%, 0.0 = no fee
+    annual_fee = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
 class InvestmentHolding(Base):
     """
     A snapshot of a single portfolio position from an investment statement PDF.
