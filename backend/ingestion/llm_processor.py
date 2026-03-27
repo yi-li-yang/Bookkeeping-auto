@@ -6,11 +6,15 @@ Two responsibilities:
 2. Batch categorisation — assign dynamic category labels to transactions
 """
 import json
+import logging
 import os
 import re
+import time
 from typing import Optional
 
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 _client: Optional[anthropic.Anthropic] = None
 
@@ -24,12 +28,22 @@ def _get_client() -> anthropic.Anthropic:
 
 def _call(prompt: str, max_tokens: int = 2048) -> str:
     client = _get_client()
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=max_tokens,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
+    delay = 30
+    for attempt in range(6):
+        try:
+            message = client.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return message.content[0].text
+        except anthropic.APIStatusError as e:
+            if e.status_code == 529 and attempt < 5:
+                logger.warning(f"Claude overloaded (attempt {attempt + 1}), retrying in {delay}s…")
+                time.sleep(delay)
+                delay = min(delay * 2, 300)
+            else:
+                raise
 
 
 def _extract_json(text: str):

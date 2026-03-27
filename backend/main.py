@@ -1,5 +1,6 @@
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -10,11 +11,28 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 
+logger = logging.getLogger(__name__)
+
+
+def _background_ingest():
+    from db.database import SessionLocal
+    from ingestion.file_scanner import scan_and_ingest
+    db = SessionLocal()
+    try:
+        logger.info("Background ingest started…")
+        result = scan_and_ingest(db)
+        logger.info(f"Background ingest done: {result['processed']} processed, {result['skipped']} skipped, {result['errors']} errors")
+    except Exception as exc:
+        logger.error(f"Background ingest failed: {exc}")
+    finally:
+        db.close()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from db.database import init_db
     init_db()
+    threading.Thread(target=_background_ingest, daemon=True).start()
     yield
 
 

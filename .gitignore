@@ -182,4 +182,6 @@ cython_debug/
 
 # Personal finance data
 data/input/
+data/tokens/
+data/real/
 services.json
