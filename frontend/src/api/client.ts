@@ -196,6 +196,58 @@ export const fetchMonthComparison = (month1: string, month2: string) =>
   api.get<MonthComparisonRow[]>("/analytics/month-comparison", { params: { month1, month2 } }).then((r) => r.data);
 
 // ---------------------------------------------------------------------------
+// Dining comparison
+// ---------------------------------------------------------------------------
+export interface DiningComparisonRow {
+  month: string;
+  dining_out: number;
+  home_food: number;
+  ratio: number | null;
+}
+
+export const fetchDiningComparison = (start?: string, end?: string) =>
+  api.get<DiningComparisonRow[]>("/analytics/dining-comparison", { params: { start, end } }).then((r) => r.data);
+
+// ---------------------------------------------------------------------------
+// Credit cards
+// ---------------------------------------------------------------------------
+export interface CreditCardData {
+  id: number;
+  account_name: string;
+  card_name: string | null;
+  credit_limit: number | null;
+  current_balance: number;
+  usage_pct: number | null;
+  promotion_end_date: string | null;
+  promo_days_left: number | null;
+  fx_fee_pct: number | null;
+  annual_fee: number | null;
+  notes: string | null;
+}
+
+export interface CreditCardIn {
+  account_name: string;
+  card_name?: string;
+  credit_limit?: number;
+  promotion_end_date?: string;
+  fx_fee_pct?: number;
+  annual_fee?: number;
+  notes?: string;
+}
+
+export const fetchCreditCards = () =>
+  api.get<CreditCardData[]>("/credit-cards").then((r) => r.data);
+
+export const createCreditCard = (payload: CreditCardIn) =>
+  api.post<CreditCardData>("/credit-cards", payload).then((r) => r.data);
+
+export const updateCreditCard = (id: number, payload: CreditCardIn) =>
+  api.put<CreditCardData>(`/credit-cards/${id}`, payload).then((r) => r.data);
+
+export const deleteCreditCard = (id: number) =>
+  api.delete(`/credit-cards/${id}`);
+
+// ---------------------------------------------------------------------------
 // Investment portfolio
 // ---------------------------------------------------------------------------
 

@@ -274,7 +274,7 @@ def _infer_account_name(filename: str) -> str:
 
 def _infer_account_type(filename: str) -> str:
     lower = filename.lower()
-    if any(k in lower for k in ("credit", "card", "cc")):
+    if any(k in lower for k in ("credit", "card", "cc", "chase", "amex", "citi", "discover", "capitalone", "capital_one", "barclays", "natwest", "visa", "mastercard")):
         return "credit_card"
     if any(k in lower for k in ("invest", "stock", "share", "brokerage", "isa")):
         return "investment"
