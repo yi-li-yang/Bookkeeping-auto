@@ -3,12 +3,12 @@ Investment portfolio analytics endpoints.
 
 Reads from the investment_holdings table populated by the investment statement parser.
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from backend.db.database import get_db
-from backend.db.models import InvestmentHolding
+from backend.db.models import InvestmentDividend, InvestmentHolding
 
 router = APIRouter(prefix="/api/investments", tags=["investments"])
 
@@ -259,3 +259,81 @@ def investment_history(db: Session = Depends(get_db)):
         }
         for r in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# Sync — pull live data from the Trading 212 API
+# ---------------------------------------------------------------------------
+
+@router.post("/sync")
+def sync_trading212(
+    include_history: bool = Query(True, description="Also pull transactions and dividends"),
+    max_pages: int = Query(20, ge=1, le=200, description="Pagination cap per history endpoint"),
+    db: Session = Depends(get_db),
+):
+    """
+    Sync every configured Trading 212 account.
+
+    Defined as a sync `def` on purpose: FastAPI runs it in a threadpool, so the
+    client's blocking rate-limit pacing never stalls the event loop.
+    """
+    from backend.integrations.t212_sync import sync_all
+    from backend.integrations.trading212 import candidate_accounts
+
+    if not candidate_accounts():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Trading 212 credentials configured. Set T212_API_KEY_INVEST and "
+                "T212_API_SECRET_INVEST (and/or T212_API_KEY_STOCKS_ISA and "
+                "T212_API_SECRET_STOCKS_ISA) in .env, plus T212_ENV=live|demo."
+            ),
+        )
+
+    return sync_all(db, include_history=include_history, max_pages=max_pages)
+
+
+# ---------------------------------------------------------------------------
+# Dividends
+# ---------------------------------------------------------------------------
+
+@router.get("/dividends")
+def investment_dividends(
+    limit: int = Query(200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+):
+    """Dividend payments, newest first, plus a per-month rollup for charting."""
+    rows = (
+        db.query(InvestmentDividend)
+        .order_by(InvestmentDividend.paid_on.desc())
+        .limit(limit)
+        .all()
+    )
+
+    by_month: dict[str, float] = {}
+    for r in rows:
+        month = r.paid_on[:7]
+        by_month[month] = round(by_month.get(month, 0) + r.amount, 2)
+
+    return {
+        "total": round(sum(r.amount for r in rows), 2),
+        "by_month": [
+            {"month": m, "amount": a} for m, a in sorted(by_month.items())
+        ],
+        "items": [
+            {
+                "id": r.id,
+                "account_name": r.account_name,
+                "instrument": r.instrument,
+                "ticker": r.ticker,
+                "isin": r.isin,
+                "type": r.dividend_type,
+                "paid_on": r.paid_on,
+                "amount": round(r.amount, 2),
+                "currency": r.currency,
+                "quantity": r.quantity,
+                "gross_per_share": r.gross_per_share,
+            }
+            for r in rows
+        ],
+    }
