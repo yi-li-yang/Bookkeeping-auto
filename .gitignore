@@ -185,3 +185,18 @@ data/input/
 data/tokens/
 data/real/
 services.json
+# Database and local backups
+data/*.db
+data/*.db-journal
+data/*.bak-*
+
+# Node / build output
+node_modules/
+dist/
+
+# Virtualenv (root-level)
+.venv/
+
+# Personal financial handbooks / seeds (real limits, account rosters)
+docs/migrate_creditcard_management
+cards.json
