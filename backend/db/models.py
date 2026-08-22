@@ -1,5 +1,7 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from backend.db.database import Base
 
@@ -17,6 +19,7 @@ class SourceFile(Base):
 
     transactions = relationship("Transaction", back_populates="source_file")
     holdings = relationship("InvestmentHolding", back_populates="source_file")
+    dividends = relationship("InvestmentDividend", back_populates="source_file")
 
 
 class Transaction(Base):
@@ -33,6 +36,7 @@ class Transaction(Base):
     confidence = Column(Float, nullable=True)
     is_user_edited = Column(Boolean, default=False)
     raw_row = Column(Text, nullable=True)         # JSON of original parsed row
+    external_id = Column(String, nullable=True, index=True)  # e.g. "t212:invest:<ref>"
 
     source_file = relationship("SourceFile", back_populates="transactions")
 
@@ -78,3 +82,43 @@ class InvestmentHolding(Base):
     source_file_id = Column(Integer, ForeignKey("source_files.id"), nullable=False)
 
     source_file = relationship("SourceFile", back_populates="holdings")
+
+
+class InvestmentDividend(Base):
+    """A single dividend or interest payment, pulled from a broker API."""
+    __tablename__ = "investment_dividends"
+    __table_args__ = (
+        UniqueConstraint("account_name", "reference", name="uq_dividend_account_ref"),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_name = Column(String, nullable=False)
+    instrument = Column(String, nullable=True)
+    isin = Column(String, nullable=True)
+    ticker = Column(String, nullable=True)
+    dividend_type = Column(String, nullable=True)      # ORDINARY / INTEREST / ...
+    paid_on = Column(String, nullable=False)           # YYYY-MM-DD
+    amount = Column(Float, nullable=False)             # in account currency
+    currency = Column(String, nullable=True)
+    quantity = Column(Float, nullable=True)
+    gross_per_share = Column(Float, nullable=True)
+    reference = Column(String, nullable=True)
+    source_file_id = Column(Integer, ForeignKey("source_files.id"), nullable=False)
+
+    source_file = relationship("SourceFile", back_populates="dividends")
+
+
+class SyncRun(Base):
+    """
+    One connector sync attempt. Backs the Connections panel and lets an expired
+    bank consent surface as `auth_required` instead of failing silently.
+    """
+    __tablename__ = "sync_runs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    connector = Column(String, nullable=False, index=True)  # trading212:invest, bank:<uid>
+    started_at = Column(DateTime, default=datetime.utcnow)
+    finished_at = Column(DateTime, nullable=True)
+    status = Column(String, nullable=False)                 # ok / error / auth_required
+    items_written = Column(Integer, default=0)
+    message = Column(Text, nullable=True)

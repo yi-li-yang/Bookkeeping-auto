@@ -24,4 +24,7 @@ def get_db():
 
 def init_db():
     from backend.db import models  # noqa: F401  (registers every table on Base)
+    from backend.db.migrations import run_migrations
+
     Base.metadata.create_all(bind=engine)
+    run_migrations(engine)
