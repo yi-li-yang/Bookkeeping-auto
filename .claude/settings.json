@@ -5,5 +5,8 @@
       "Bash(curl -s http://localhost:8000/api/investments/allocation)",
       "Bash(python -c \"import json,sys; data=json.load\\(sys.stdin\\); print\\(''''Accounts:''''\\); [print\\(f''''  {a[\"\"account_name\"\"]}: {a[\"\"weight_pct\"\"]}%''''\\) for a in data[''''by_account'''']]; print\\(f''''Total positions: {len\\(data[\"\"by_instrument\"\"]\\)}''''\\)\")"
     ]
+  },
+  "enabledPlugins": {
+    "trading212-api@trading212-plugins": true
   }
 }

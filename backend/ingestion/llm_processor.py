@@ -14,6 +14,8 @@ from typing import Optional
 
 import anthropic
 
+from backend.config import settings
+
 logger = logging.getLogger(__name__)
 
 _client: Optional[anthropic.Anthropic] = None
@@ -22,7 +24,7 @@ _client: Optional[anthropic.Anthropic] = None
 def _get_client() -> anthropic.Anthropic:
     global _client
     if _client is None:
-        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        _client = anthropic.Anthropic(api_key=settings.require_anthropic_key())
     return _client
 
 

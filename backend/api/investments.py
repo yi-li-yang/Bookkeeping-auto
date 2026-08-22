@@ -7,8 +7,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from db.database import get_db
-from db.models import InvestmentHolding
+from backend.db.database import get_db
+from backend.db.models import InvestmentHolding
 
 router = APIRouter(prefix="/api/investments", tags=["investments"])
 

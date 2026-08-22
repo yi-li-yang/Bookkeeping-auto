@@ -2,9 +2,9 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from db.database import get_db
-from db.models import Transaction
-from schemas.transaction import TransactionOut, TransactionPatch
+from backend.db.database import get_db
+from backend.db.models import Transaction
+from backend.schemas.transaction import TransactionOut, TransactionPatch
 
 router = APIRouter(prefix="/api", tags=["transactions"])
 

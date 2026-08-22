@@ -8,12 +8,13 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
-from db.models import SourceFile, Transaction, InvestmentHolding
-from ingestion import csv_parser, pdf_parser, llm_processor
+from backend.config import settings
+from backend.db.models import SourceFile, Transaction, InvestmentHolding
+from backend.ingestion import csv_parser, pdf_parser, llm_processor
 
 logger = logging.getLogger(__name__)
 
-INPUT_DIR = os.environ.get("INPUT_DIR", "/app/data/input")
+INPUT_DIR = str(settings.input_dir)
 SUPPORTED_EXTENSIONS = {".csv", ".pdf"}
 
 

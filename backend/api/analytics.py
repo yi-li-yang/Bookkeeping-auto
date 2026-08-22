@@ -6,8 +6,8 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
-from db.database import get_db
-from db.models import Transaction
+from backend.db.database import get_db
+from backend.db.models import Transaction
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -395,7 +395,7 @@ def monthly_summary(
     db: Session = Depends(get_db),
 ):
     """Generate an LLM-written natural language summary for a given month."""
-    from ingestion.llm_processor import _call
+    from backend.ingestion.llm_processor import _call
 
     month_start = f"{month}-01"
     month_end = f"{month}-31"
