@@ -200,3 +200,7 @@ dist/
 # Personal financial handbooks / seeds (real limits, account rosters)
 docs/migrate_creditcard_management
 cards.json
+
+# Any .env variant (backups, .env.local) -- but keep the committed template
+.env.*
+!.env.example

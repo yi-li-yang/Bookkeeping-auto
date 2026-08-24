@@ -85,6 +85,34 @@ Trading 212 does not tell you which account a key belongs to, so the sync works
 it out by matching your live positions against previous snapshots, and warns if
 that contradicts the variable name you stored it under.
 
+### Monzo (automatic)
+
+Register a **confidential** OAuth client at <https://developers.monzo.com/>
+with redirect URL `http://localhost:8000/api/banks/monzo/callback`, then add to
+`.env`:
+
+```bash
+MONZO_CLIENT_ID=oauth2client_...
+MONZO_CLIENT_SECRET=mnzconf...
+```
+
+Visit <http://localhost:8000/api/banks/monzo/connect>, approve the request in
+the Monzo app when the push notification arrives, then sync:
+
+```bash
+curl -X POST http://localhost:8000/api/banks/monzo/sync
+```
+
+**Sync promptly after linking.** Monzo serves the complete transaction history
+only for about five minutes after authorisation; after that only the last 90
+days are reachable, and reconnecting does not reopen the window. The first sync
+pulls everything automatically, so the only thing that matters is running it
+soon after you connect. Re-running is safe -- records are matched on a stable
+id, so nothing duplicates.
+
+Pot transfers and top-ups are filed as `Transfers` rather than spending, and
+declined payments are skipped.
+
 ### Statements (manual)
 
 1. Copy CSV or PDF statements into `data/input/`
@@ -161,14 +189,16 @@ data/input/       — drop statement files here before ingesting
 
 ## Known limitations
 
-- **Transfers into investment accounts count as income.** The analytics layer
-  does not yet filter by account type, so moving money into a brokerage inflates
-  the income and savings-rate figures.
 - **Net worth and portfolio value are computed separately** and do not
   reconcile — one derives from cumulative transactions, the other from holdings
   valuations.
-- Chase, Amex and other banks without an accessible API remain a manual
-  statement drop.
+- **Only Monzo syncs automatically among the banks.** Post-Brexit the UK sits
+  outside PSD2 and the free routes to UK open banking have closed: Enable
+  Banking covers the EEA only, and GoCardless/Nordigen has shut new signups.
+  Chase, Amex, Bank of Scotland and M&S Bank remain a manual statement drop.
+- **Klarna cannot be synced at all.** BNPL is not a PSD2 payment account, so
+  there is no balance to read. Its instalments do show up as payments on
+  whichever card funds them.
 
 ## Privacy
 

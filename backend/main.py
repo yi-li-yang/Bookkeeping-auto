@@ -5,7 +5,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.api import analytics, credit_cards, ingestion, investments, transactions
+from backend.api import (
+    analytics, banks, credit_cards, ingestion, investments, transactions,
+)
 from backend.config import settings
 from backend.db.database import init_db
 
@@ -36,6 +38,7 @@ app.include_router(transactions.router)
 app.include_router(analytics.router)
 app.include_router(investments.router)
 app.include_router(credit_cards.router)
+app.include_router(banks.router)
 
 
 @app.get("/health")

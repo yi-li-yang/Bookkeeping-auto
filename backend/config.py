@@ -58,8 +58,17 @@ class Settings:
     eb_private_key_path: Path | None = None
     eb_redirect_uri: str = "http://localhost:8000/api/banks/callback"
 
+    monzo_client_id: str | None = None
+    monzo_client_secret: str | None = None
+    monzo_redirect_uri: str = "http://localhost:8000/api/banks/monzo/callback"
+    monzo_token_path: Path | None = None
+
     sync_interval_minutes: int = 360
     sync_on_startup: bool = True
+
+    @property
+    def monzo_configured(self) -> bool:
+        return bool(self.monzo_client_id and self.monzo_client_secret)
 
     @property
     def database_url(self) -> str:
@@ -98,6 +107,15 @@ class Settings:
             eb_redirect_uri=(
                 os.environ.get("EB_REDIRECT_URI")
                 or "http://localhost:8000/api/banks/callback"
+            ),
+            monzo_client_id=os.environ.get("MONZO_CLIENT_ID") or None,
+            monzo_client_secret=os.environ.get("MONZO_CLIENT_SECRET") or None,
+            monzo_redirect_uri=(
+                os.environ.get("MONZO_REDIRECT_URI")
+                or "http://localhost:8000/api/banks/monzo/callback"
+            ),
+            monzo_token_path=_env_path(
+                "MONZO_TOKEN_PATH", data_dir / "tokens" / "monzo.json"
             ),
             sync_interval_minutes=_env_int("SYNC_INTERVAL_MINUTES", 360),
             sync_on_startup=_env_bool("SYNC_ON_STARTUP", True),

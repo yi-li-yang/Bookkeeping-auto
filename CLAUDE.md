@@ -117,6 +117,65 @@ Cash is stored as a synthetic `CASH` holding, derived as
 `totalValue - sum(stored position values)`, so the portfolio total reconciles
 exactly. Its `cost_gbp`/`return_gbp` stay NULL so return figures are unaffected.
 
+## Bank accounts
+
+Six UK accounts: Bank of Scotland, Chase, Amex, M&S Bank, Monzo, Klarna.
+**Only Monzo is reachable by API.** Everything else is statement import.
+
+This is not an oversight. Post-Brexit the UK sits outside PSD2, and the free
+routes to UK open banking have closed:
+
+- **Enable Banking** covers the EEA only -- 30 markets, Austria to Sweden, no
+  UK. `backend/integrations/enablebanking.py` is a complete, tested, working
+  client that can reach none of these accounts. It is kept dormant, not
+  deleted. Nothing imports it.
+- **GoCardless / Nordigen**, the old free tier, has closed new signups.
+- **Chase UK** serves its interface only to FCA-registered TPPs.
+- **Klarna** is a TPP, not an ASPSP -- its Open Banking Platform reads *your*
+  bank to fund BNPL. BNPL is not a PSD2 payment account, so there is nothing to
+  read. Its instalments already appear on whichever card funds them.
+
+Run `scripts/check_bank_coverage.py` before writing any Enable Banking sync
+code. That ordering is the point of the script; ignoring it is how a full
+client got built against a provider that cannot reach these accounts.
+
+### Monzo
+
+`backend/integrations/monzo.py` is pure HTTP; `monzo_auth.py` handles token
+persistence; `monzo_sync.py` does the mapping and writes.
+
+```bash
+MONZO_CLIENT_ID / MONZO_CLIENT_SECRET      # confidential client, or no refresh token
+MONZO_REDIRECT_URI=http://localhost:8000/api/banks/monzo/callback
+```
+
+Connect at `/api/banks/monzo/connect`, then approve the push notification in
+the app. Sync with `POST /api/banks/monzo/sync`.
+
+Five things this integration has to get right:
+
+1. **Full history is available for five minutes after linking**, then only the
+   last 90 days, and re-authenticating does not reopen the window. The first
+   sync therefore sends no `since` and pulls everything; later syncs are
+   incremental. Get this wrong once and the history is unreachable until the
+   next consent.
+2. **Only confidential clients get refresh tokens.** A non-confidential client
+   needs manual re-linking every few hours.
+3. **A refresh invalidates the previous refresh token**, so the new pair must be
+   persisted before the next call. All reads go through
+   `monzo_auth.access_token()` so there is one place that can forget; writes are
+   atomic via `os.replace`.
+4. **Amounts are minor units and already signed** the way this schema wants
+   (negative for money out) -- unlike Trading 212, no sign inference.
+5. **Pot transfers and top-ups are categorised deterministically as
+   `Transfers`**, bypassing the LLM. They move the user's own money, and the
+   analytics layer excludes that category from income and expenses.
+
+Declined transactions carry the amount they would have been; they are skipped,
+or a declined GBP500 payment reads as GBP500 of spending. `account_label()`
+deliberately ignores Monzo's `description` field, which holds the account
+holder's real name on personal accounts.
+
 ## Ingest files
 
 1. Copy CSV/PDF statements into `data/input/`
@@ -152,12 +211,14 @@ comparison.
 
 ## Known issues
 
-**Analytics are not account-type aware.** `income-vs-expenses`,
-`annual-summary`, `projection` and `monthly-summary` sum `Transaction.amount`
-without filtering `account_type`, so money transferred *into* an investment
-account reads as income and inflates the savings rate. With both Trading 212
-accounts synced this is currently ~£96k of phantom income. Interest and
-dividends are genuine income and should stay.
+**Transfers are excluded by category, not by account type.** All 13
+analytics endpoints filter out the `Transfers` category, which is what stops a
+brokerage deposit reading as income (it was inflating total income by ~£96k).
+Filtering on `account_type` instead would have been wrong -- it would also drop
+genuine interest and fees. The cost is that anything miscategorised as a
+transfer vanishes from income and spending. `net-worth` and `projection`'s
+`current_balance` opt out deliberately: they track balances, where a transfer
+really does move money.
 
 **Two notions of investment balance.** `/api/analytics/net-worth` derives the
 investment line from cumulative transactions, entirely separate from the
