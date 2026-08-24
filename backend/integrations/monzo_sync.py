@@ -117,19 +117,47 @@ def transaction_description(item: dict) -> str:
     return (item.get("description") or "Monzo transaction").strip()
 
 
-def deterministic_category(item: dict) -> str | None:
+def own_account_ids(db: Session) -> set[str]:
+    """
+    Every Monzo account id this database has synced.
+
+    Derived from the synthetic SourceFile names rather than a live API call, so
+    it works offline, in tests, and during re-categorisation.
+    """
+    rows = (
+        db.query(SourceFile.filename)
+        .filter(SourceFile.filename.like("monzo:%"))
+        .all()
+    )
+    return {r[0].split(":", 1)[1] for r in rows if ":" in r[0]}
+
+
+def deterministic_category(item: dict, own_ids: set[str] | None = None) -> str | None:
     """
     Categories we know for certain, without asking the LLM.
 
-    Both are movements of the user's own money rather than spending, so getting
-    them into `Transfers` matters: the analytics layer excludes that category
-    from income and expenses, and a pot transfer counted as spending would
-    double-count everything saved.
+    All three are movements of the user's own money rather than spending, so
+    getting them into `Transfers` matters: the analytics layer excludes that
+    category from income and expenses.
+
+    The third rule is the important one. Funding a joint account looks exactly
+    like a payment to another person -- same `p2p_payment` scheme, and the
+    counterparty name is a person's name. Left to the LLM it gets read as
+    whatever the joint account then pays for: two transfers of 2000 and 800 into
+    a joint account that paid 1950 of rent were all filed as Rent, reporting
+    4750 of rent in a month where 1950 left the household. The counterparty's
+    `account_id` settles it -- if it is an account we also sync, the money never
+    left.
     """
     if item.get("scheme") == _POT_SCHEME:
         return "Transfers"
     if item.get("is_load"):
         return "Transfers"      # a top-up, i.e. money in from another account
+
+    counterparty = item.get("counterparty") or {}
+    if own_ids and counterparty.get("account_id") in own_ids:
+        return "Transfers"
+
     return None
 
 
@@ -216,7 +244,7 @@ def _categorise(rows: list[dict]) -> dict[int, dict]:
 
 def _write_transactions(
     db: Session, source_file: SourceFile, label: str, items: list[dict],
-    kind: str = "bank",
+    kind: str = "bank", own_ids: set[str] | None = None,
 ) -> int:
     known = _existing_external_ids(db, source_file.id)
 
@@ -249,12 +277,12 @@ def _write_transactions(
     for_llm = [
         {"id": i, "date": date, "amount": amount, "description": description}
         for i, (_, item, date, amount, description) in enumerate(pending)
-        if deterministic_category(item) is None
+        if deterministic_category(item, own_ids) is None
     ]
     categories = _categorise(for_llm)
 
     for i, (external_id, item, date, amount, description) in enumerate(pending):
-        certain = deterministic_category(item)
+        certain = deterministic_category(item, own_ids)
         if certain is not None:
             category, confidence = certain, 1.0
         else:
@@ -291,7 +319,9 @@ def sync_account(
 
     since = _since_for(db, source_file.id, full_history)
     items = client.transactions(account_id, since=since, max_pages=max_pages)
-    written = _write_transactions(db, source_file, label, items, account_kind(account))
+    written = _write_transactions(
+        db, source_file, label, items, account_kind(account), own_account_ids(db),
+    )
 
     # Flush first: the count below must include the rows just added, and
     # adding `written` to a post-autoflush count would double them.
@@ -386,3 +416,50 @@ def _record_run(
         status=status, items_written=items_written, message=message,
     ))
     db.commit()
+
+
+def recategorise_internal_transfers(db: Session) -> list[dict]:
+    """
+    Re-apply the deterministic rules to Monzo rows already stored.
+
+    Needed because own-account detection arrived after the first sync, and a
+    transfer misfiled as spending inflates whatever category it was guessed
+    into. Only ever moves a row *to* Transfers, and never touches a row the
+    user has edited by hand.
+    """
+    own = own_account_ids(db)
+    if not own:
+        return []
+
+    rows = (
+        db.query(Transaction)
+        .join(SourceFile, Transaction.source_file_id == SourceFile.id)
+        .filter(SourceFile.filename.like("monzo:%"))
+        .filter(Transaction.raw_row.isnot(None))
+        .all()
+    )
+
+    changed = []
+    for row in rows:
+        if row.is_user_edited:
+            continue
+        try:
+            item = json.loads(row.raw_row)
+        except (TypeError, ValueError):
+            continue
+
+        certain = deterministic_category(item, own)
+        if certain is None or row.category == certain:
+            continue
+
+        changed.append({
+            "date": row.date, "amount": row.amount,
+            "description": row.description,
+            "from": row.category, "to": certain,
+        })
+        row.category = certain
+        row.confidence = 1.0
+
+    if changed:
+        db.commit()
+    return changed

@@ -587,3 +587,128 @@ def test_flex_transactions_are_stored_as_credit_card(db, no_llm):
     row = db.query(Transaction).one()
     assert row.account_name == "Monzo Flex"
     assert row.account_type == "credit_card"
+
+
+# -- internal transfers -----------------------------------------------------
+
+def joint_transfer(tx_id: str, amount: int, joint_id: str = "acc_joint"):
+    """Funding a joint account: p2p_payment, counterparty is an account we own."""
+    return txn(tx_id, amount, scheme="p2p_payment", counterparty={
+        "account_id": joint_id, "name": "Hoi Lee & Yili Yang",
+        "user_id": "anonuser_x",
+    })
+
+
+def test_funding_your_own_joint_account_is_a_transfer():
+    """
+    The failure this prevents: two transfers of 2000 and 800 into a joint
+    account that paid 1950 of rent were all categorised Rent, reporting 4750 of
+    rent in a month where 1950 left the household.
+    """
+    own = {"acc_personal", "acc_joint"}
+    assert monzo_sync.deterministic_category(
+        joint_transfer("tx_1", -200000), own) == "Transfers"
+
+
+def test_paying_an_actual_person_is_not_a_transfer():
+    """
+    Distinguished only by the counterparty account id -- a payment to a friend
+    has the same scheme and a person's name too.
+    """
+    own = {"acc_personal"}
+    assert monzo_sync.deterministic_category(
+        joint_transfer("tx_1", -5000, joint_id="acc_someone_else"), own) is None
+
+
+def test_paying_a_business_is_not_a_transfer():
+    """Real rent leaving the joint account: a sort code, no counterparty account id."""
+    rent = txn("tx_rent", -195000, scheme="payport_faster_payments", counterparty={
+        "account_number": "33666581", "sort_code": "400602",
+        "name": "Districts Properties Ltd", "beneficiary_account_type": "Business",
+    })
+    assert monzo_sync.deterministic_category(rent, {"acc_personal", "acc_joint"}) is None
+
+
+def test_transfer_detection_is_inert_without_known_accounts():
+    """No own-account list must never mean 'everything is a transfer'."""
+    assert monzo_sync.deterministic_category(joint_transfer("tx_1", -100), set()) is None
+    assert monzo_sync.deterministic_category(joint_transfer("tx_1", -100), None) is None
+
+
+def test_own_account_ids_come_from_the_synced_source_files(db):
+    db.add(SourceFile(filename="monzo:acc_a", file_type="api", status="done"))
+    db.add(SourceFile(filename="monzo:acc_b", file_type="api", status="done"))
+    db.add(SourceFile(filename="trading212:12345", file_type="api", status="done"))
+    db.add(SourceFile(filename="statement.csv", file_type="csv", status="done"))
+    db.commit()
+
+    assert monzo_sync.own_account_ids(db) == {"acc_a", "acc_b"}
+
+
+def test_internal_transfers_bypass_the_llm_during_sync(db, monkeypatch):
+    from backend.ingestion import llm_processor
+
+    asked = []
+
+    def spy(rows):
+        asked.extend(r["description"] for r in rows)
+        return [{"id": r["id"], "category": "Rent", "confidence": 0.9} for r in rows]
+
+    monkeypatch.setattr(llm_processor, "categorise_transactions", spy)
+
+    # The joint account must already be known, which is what makes the
+    # counterparty recognisable.
+    db.add(SourceFile(filename="monzo:acc_joint", file_type="api", status="done"))
+    db.commit()
+
+    def handler(request):
+        return httpx.Response(200, json={"transactions": [
+            joint_transfer("tx_fund", -200000),
+            txn("tx_shop", -500, merchant={"name": "Argos"}),
+        ]})
+
+    with make_client(handler) as client:
+        monzo_sync.sync_account(db, client, ACCOUNT)
+
+    fund = db.query(Transaction).filter_by(external_id="monzo:tx_fund").one()
+    assert fund.category == "Transfers"
+    assert fund.confidence == 1.0
+    assert asked == ["Argos"]
+
+
+def test_recategorise_repairs_rows_stored_before_the_rule_existed(db):
+    sf = SourceFile(filename="monzo:acc_personal", file_type="api", status="done")
+    db.add(sf)
+    db.add(SourceFile(filename="monzo:acc_joint", file_type="api", status="done"))
+    db.flush()
+
+    db.add(Transaction(
+        date="2026-08-01", description="Hoi Lee & Yili Yang", amount=-2000.0,
+        category="Rent", account_name="Monzo", account_type="bank",
+        source_file_id=sf.id, external_id="monzo:tx_fund",
+        raw_row=json.dumps(joint_transfer("tx_fund", -200000)),
+    ))
+    db.commit()
+
+    changed = monzo_sync.recategorise_internal_transfers(db)
+
+    assert len(changed) == 1
+    assert changed[0]["from"] == "Rent" and changed[0]["to"] == "Transfers"
+    assert db.query(Transaction).one().category == "Transfers"
+
+
+def test_recategorise_never_overrides_a_manual_edit(db):
+    sf = SourceFile(filename="monzo:acc_personal", file_type="api", status="done")
+    db.add(sf)
+    db.add(SourceFile(filename="monzo:acc_joint", file_type="api", status="done"))
+    db.flush()
+    db.add(Transaction(
+        date="2026-08-01", description="Hoi Lee & Yili Yang", amount=-2000.0,
+        category="Gift", account_name="Monzo", account_type="bank",
+        source_file_id=sf.id, external_id="monzo:tx_fund", is_user_edited=True,
+        raw_row=json.dumps(joint_transfer("tx_fund", -200000)),
+    ))
+    db.commit()
+
+    assert monzo_sync.recategorise_internal_transfers(db) == []
+    assert db.query(Transaction).one().category == "Gift"

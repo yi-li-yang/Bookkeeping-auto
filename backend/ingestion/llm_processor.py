@@ -1,14 +1,24 @@
 """
-LLM-powered processing using the Anthropic Claude API.
+LLM-powered processing.
 
 Two responsibilities:
 1. Column detection  — given raw CSV rows or PDF text/tables, identify date/amount/description
 2. Batch categorisation — assign dynamic category labels to transactions
+
+Every LLM feature funnels through `_call`, so the backend is a single switch:
+
+- LLM_BACKEND=api (default) bills the Anthropic API, model set by LLM_MODEL.
+- LLM_BACKEND=claude_code shells out to the Claude Code CLI, billing the
+  user's subscription instead. Measured locally at ~17k input tokens of harness
+  overhead per invocation regardless of prompt size, so it suits occasional
+  analysis and not bulk categorisation.
 """
 import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 import time
 from typing import Optional
 
@@ -29,12 +39,81 @@ def _get_client() -> anthropic.Anthropic:
 
 
 def _call(prompt: str, max_tokens: int = 2048) -> str:
+    """
+    One prompt in, one text response out. Every LLM feature routes through here,
+    so the backend and model are switchable in a single place.
+    """
+    if settings.llm_backend == "claude_code":
+        return _call_claude_code(prompt)
+    return _call_api(prompt, max_tokens)
+
+
+def _call_claude_code(prompt: str) -> str:
+    """
+    Run the prompt through the Claude Code CLI, billing the user's subscription
+    instead of the API.
+
+    Costly per call: the CLI loads its full harness -- system prompt, tool
+    definitions, CLAUDE.md -- so a trivial prompt still measured ~17k input
+    tokens locally. Fine for the occasional analysis, wrong for bulk
+    categorisation, which is why the backend is configurable rather than
+    switched wholesale.
+    """
+    cli = settings.claude_cli_path or shutil.which("claude")
+    if not cli:
+        raise RuntimeError(
+            "LLM_BACKEND=claude_code but the Claude Code CLI was not found. "
+            "Install it with `npm i -g @anthropic-ai/claude-code`, or set "
+            "CLAUDE_CLI_PATH to its full path."
+        )
+
+    try:
+        completed = subprocess.run(
+            [
+                cli, "-p", "--output-format", "json",
+                # The CLI is an agent and defaults to conversational replies.
+                # _extract_json tolerates trailing prose, but suppressing it
+                # keeps responses cheap and unambiguous.
+                "--append-system-prompt",
+                "Answer with the requested output only. No preamble, no "
+                "explanation, no follow-up questions.",
+            ],
+            input=prompt, capture_output=True, text=True,
+            timeout=settings.claude_cli_timeout, encoding="utf-8",
+            # .cmd shim on Windows needs a shell-resolved launch.
+            shell=(os.name == "nt" and str(cli).lower().endswith((".cmd", ".bat"))),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"Claude Code CLI timed out after {settings.claude_cli_timeout}s."
+        ) from exc
+
+    if completed.returncode != 0:
+        raise RuntimeError(
+            f"Claude Code CLI failed ({completed.returncode}): "
+            f"{(completed.stderr or completed.stdout)[:300]}"
+        )
+
+    # The CLI prints warnings before the JSON, so parse from the first brace
+    # rather than assuming stdout is pure JSON.
+    out = completed.stdout or ""
+    start = out.find("{")
+    if start == -1:
+        raise RuntimeError(f"Claude Code CLI returned no JSON: {out[:300]}")
+
+    payload = json.loads(out[start:])
+    if payload.get("is_error"):
+        raise RuntimeError(f"Claude Code CLI reported an error: {payload.get('result')}")
+    return payload.get("result") or ""
+
+
+def _call_api(prompt: str, max_tokens: int = 2048) -> str:
     client = _get_client()
     delay = 30
     for attempt in range(6):
         try:
             message = client.messages.create(
-                model="claude-opus-4-6",
+                model=settings.llm_model,
                 max_tokens=max_tokens,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -49,16 +128,34 @@ def _call(prompt: str, max_tokens: int = 2048) -> str:
 
 
 def _extract_json(text: str):
-    """Pull the first JSON object or array out of a Claude response."""
-    # Try to find ```json ... ``` block first
+    """
+    Pull the first JSON object or array out of a model response.
+
+    Two things this has to survive, both seen in practice:
+
+    - Trailing prose. The Claude Code backend is agentic and tends to add a
+      sentence after the payload, so the parse must stop at the end of the first
+      complete value instead of requiring the whole remainder to be JSON.
+    - An array whose first element is an object. The previous version preferred
+      `{` over `[` whenever a brace appeared anywhere, so `[{"id": 0}]` started
+      parsing at the brace and died on the trailing `]` with "Extra data".
+    """
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
-        return json.loads(fence.group(1).strip())
-    # Otherwise try to parse the whole response
-    start = text.find("{") if "{" in text else text.find("[")
-    if start == -1:
-        raise ValueError(f"No JSON found in response: {text[:300]}")
-    return json.loads(text[start:])
+        try:
+            return json.loads(fence.group(1).strip())
+        except json.JSONDecodeError:
+            pass        # fall through to scanning the raw text
+
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"[{\[]", text):
+        try:
+            value, _ = decoder.raw_decode(text, match.start())
+        except json.JSONDecodeError:
+            continue
+        return value
+
+    raise ValueError(f"No JSON found in response: {text[:300]}")
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +309,19 @@ def categorise_transactions(transactions: list[dict]) -> list[dict]:
 
 
 def _categorise_batch(batch: list[dict]) -> list[dict]:
+    # `date` is included deliberately: without it the model cannot tell a
+    # recurring monthly charge from a one-off payment to the same payee, which
+    # is exactly what separates rent from a deposit.
     items_text = json.dumps(
-        [{"id": t["id"], "description": t["description"], "amount": t["amount"]} for t in batch],
+        [
+            {
+                "id": t["id"],
+                "date": t.get("date"),
+                "description": t["description"],
+                "amount": t["amount"],
+            }
+            for t in batch
+        ],
         indent=2,
     )
 
@@ -223,7 +331,25 @@ Rules:
 - Use consistent, natural category names (e.g. "Groceries", "Dining Out", "Transport", "Subscriptions", "Salary", "Rent", "Utilities", "Healthcare", "Shopping", "Transfers", "Entertainment", "Travel", "Insurance")
 - Invent new categories freely if needed — but keep them consistent
 - Positive amounts are typically income; negative amounts are expenses
-- confidence: float 0.0–1.0 indicating how certain you are
+- confidence: float 0.0-1.0 indicating how certain you are
+
+Housing payments need care, because several different things go to the same
+landlord or letting agent and they are not the same expense:
+- "Rent" is ONLY the recurring periodic charge. Look across the batch: a rent
+  payment repeats at a regular interval, and its amount is stable until the
+  tenancy changes.
+- A one-off payment to a landlord or letting agent that is NOT part of that
+  recurring series is something else. Use "Rental Deposit" for a returnable
+  security deposit (often larger than, or a multiple of, the recurring amount),
+  and "Letting Fees" for holding fees, referencing and admin charges (usually
+  much smaller).
+- Two payments to the same payee on the same day are a strong signal that only
+  one of them is rent.
+- Do not classify a payment as Rent merely because the payee is a landlord.
+
+Use "Transfers" for money moving between the user's own accounts, including
+funding a joint account. These are not spending, and misfiling one as a real
+expense double-counts whatever the receiving account then pays for.
 
 Transactions:
 {items_text}

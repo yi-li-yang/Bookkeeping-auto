@@ -206,8 +206,54 @@ new file instead, and `AUTO_INGEST=false` turns it off.
   date/amount/description columns
 - PDF parsing: Claude parses extracted tables/text into structured transactions
 - Categorisation: Claude invents category names freely; batched in groups of 50
-- API-sourced transactions are categorised deterministically (`confidence=1.0`),
-  not by the LLM
+- API-sourced transactions are categorised deterministically (`confidence=1.0`)
+  where the answer is structural, and by the LLM otherwise
+
+**Every LLM feature funnels through `llm_processor._call`**, so the backend is
+one switch:
+
+| `LLM_BACKEND` | Bills | Notes |
+|---|---|---|
+| `api` (default) | Anthropic API, model from `LLM_MODEL` | Cheap per call |
+| `claude_code` | Your Claude subscription | Needs the CLI installed |
+
+`claude_code` shells out to `claude -p --output-format json`. It carries **~17k
+input tokens of harness overhead per invocation** regardless of prompt size --
+the CLI loads its system prompt, tool definitions and CLAUDE.md every time.
+Measured locally at $0.18 for a one-word reply. Suits the occasional analysis
+call; wasteful for bulk categorisation, which is why the switch exists rather
+than a wholesale move.
+
+`LLM_MODEL` defaults to `claude-sonnet-5`. It was `claude-opus-4-6` hardcoded,
+which is expensive for what categorisation is: mechanical labelling of short
+strings.
+
+`_extract_json` must tolerate both leading and trailing prose. The Claude Code
+backend is an agent and adds commentary around the payload even when told not
+to, so parsing stops at the end of the first complete JSON value.
+
+## Categorisation rules that are load-bearing
+
+**Internal transfers must not be spending.** Funding a joint account looks
+exactly like paying a person -- same `p2p_payment` scheme, and the counterparty
+is a person's name. Left to the LLM it gets categorised as whatever the joint
+account then pays for. Two transfers of GBP2000 and GBP800 into a joint account
+that paid GBP1950 of rent were all filed as `Rent`, reporting GBP4750 of rent in
+a month where GBP1950 left the household.
+
+`monzo_sync.deterministic_category()` settles it structurally: if the
+counterparty's `account_id` is an account we also sync (`own_account_ids()`,
+derived from the `monzo:<id>` SourceFile rows), the money never left.
+`recategorise_internal_transfers()` repairs rows stored before the rule existed,
+and never touches a row the user has edited.
+
+**Rent is not everything paid to a landlord.** Deposits, holding fees and the
+recurring charge all go to the same payee. The categoriser prompt asks for
+`Rent` only for the recurring series, with `Rental Deposit` and `Letting Fees`
+for one-offs, and flags two payments to the same payee on the same day as a
+signal that only one is rent. This needs the transaction `date` in the payload
+-- it was being collected and then dropped before reaching the prompt, leaving
+the model no way to tell recurring from one-off.
 
 ## Implemented tiers
 

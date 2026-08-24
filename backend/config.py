@@ -70,6 +70,13 @@ class Settings:
     auto_ingest: bool = True
     auto_ingest_poll_seconds: int = 20
 
+    # "api" bills the Anthropic API; "claude_code" shells out to the Claude Code
+    # CLI and bills the user's subscription instead.
+    llm_backend: str = "api"
+    llm_model: str = "claude-sonnet-5"
+    claude_cli_path: str | None = None
+    claude_cli_timeout: int = 300
+
     @property
     def monzo_configured(self) -> bool:
         return bool(self.monzo_client_id and self.monzo_client_secret)
@@ -125,6 +132,10 @@ class Settings:
             sync_on_startup=_env_bool("SYNC_ON_STARTUP", True),
             auto_ingest=_env_bool("AUTO_INGEST", True),
             auto_ingest_poll_seconds=_env_int("AUTO_INGEST_POLL_SECONDS", 20),
+            llm_backend=(os.environ.get("LLM_BACKEND") or "api").strip().lower(),
+            llm_model=(os.environ.get("LLM_MODEL") or "claude-sonnet-5").strip(),
+            claude_cli_path=os.environ.get("CLAUDE_CLI_PATH") or None,
+            claude_cli_timeout=_env_int("CLAUDE_CLI_TIMEOUT", 300),
         )
         # Replaces the Dockerfile's `RUN mkdir -p /app/data/input`.
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
