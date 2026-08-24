@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import func, case
+from sqlalchemy import func, case, or_
 from sqlalchemy.orm import Session
 
 from backend.db.database import get_db
@@ -12,11 +12,35 @@ from backend.db.models import Transaction
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
 
-def _month_filter(q, start: Optional[str], end: Optional[str]):
+# Moving money between your own accounts is neither income nor spending.
+# Without this, a transfer into a brokerage reads as earnings and inflates the
+# savings rate -- and the matching debit reads as an expense on the other side.
+TRANSFER_CATEGORIES = ("Transfers",)
+
+
+def _exclude_transfers(q):
+    """Drop self-transfers from an income/expense aggregation."""
+    return q.filter(
+        or_(
+            Transaction.category.is_(None),
+            Transaction.category.notin_(TRANSFER_CATEGORIES),
+        )
+    )
+
+
+def _month_filter(q, start: Optional[str], end: Optional[str], exclude_transfers: bool = True):
+    """
+    Apply the date range, and by default drop self-transfers.
+
+    Pass exclude_transfers=False for balance-tracking views such as net worth,
+    where a transfer genuinely moves the balance and must be counted.
+    """
     if start:
         q = q.filter(Transaction.date >= start)
     if end:
         q = q.filter(Transaction.date <= end)
+    if exclude_transfers:
+        q = _exclude_transfers(q)
     return q
 
 
@@ -184,7 +208,8 @@ def recurring_expenses(db: Session = Depends(get_db)):
         Transaction.category,
         Transaction.amount,
         func.substr(Transaction.date, 1, 7).label("month"),
-    ).filter(Transaction.amount < 0).all()
+    )
+    rows = _exclude_transfers(rows).filter(Transaction.amount < 0).all()
 
     groups: dict = defaultdict(list)
     for r in rows:
@@ -229,10 +254,10 @@ def spending_velocity(
     def get_daily(y: int, m: int) -> dict:
         month_str = f"{y:04d}-{m:02d}"
         day_expr = func.substr(Transaction.date, 9, 2)
-        rows = db.query(
+        rows = _exclude_transfers(db.query(
             day_expr.label("day"),
             func.sum(Transaction.amount).label("total"),
-        ).filter(
+        )).filter(
             Transaction.amount < 0,
             Transaction.date.like(f"{month_str}%"),
         ).group_by(day_expr).order_by(day_expr).all()
@@ -274,7 +299,8 @@ def net_worth(
         Transaction.account_type,
         func.sum(Transaction.amount).label("net"),
     )
-    q = _month_filter(q, start, end)
+    # Balances, not income: transfers must be counted here.
+    q = _month_filter(q, start, end, exclude_transfers=False)
     rows = q.group_by(month_expr, Transaction.account_type).order_by(month_expr).all()
 
     months_net: dict = defaultdict(lambda: defaultdict(float))
@@ -308,7 +334,9 @@ def anomalies(
     db: Session = Depends(get_db),
 ):
     """Flag statistically unusual expense transactions (z-score > 2)."""
-    all_expenses = db.query(Transaction).filter(Transaction.amount < 0).all()
+    all_expenses = _exclude_transfers(
+        db.query(Transaction)
+    ).filter(Transaction.amount < 0).all()
     cat_amounts: dict = defaultdict(list)
     for t in all_expenses:
         cat_amounts[t.category or "Uncategorised"].append(abs(t.amount))
@@ -359,11 +387,11 @@ def projection(
     month_expr = func.substr(Transaction.date, 1, 7)
     income_expr = func.sum(case((Transaction.amount > 0, Transaction.amount), else_=0))
     expense_expr = func.sum(case((Transaction.amount < 0, Transaction.amount), else_=0))
-    rows = db.query(
+    rows = _exclude_transfers(db.query(
         month_expr.label("month"),
         income_expr.label("income"),
         expense_expr.label("expenses"),
-    ).group_by(month_expr).order_by(month_expr.desc()).limit(3).all()
+    )).group_by(month_expr).order_by(month_expr.desc()).limit(3).all()
 
     if not rows:
         return []
@@ -371,6 +399,7 @@ def projection(
     avg_income = sum(r.income or 0 for r in rows) / len(rows)
     avg_expenses = sum(abs(r.expenses or 0) for r in rows) / len(rows)
     avg_net = avg_income - avg_expenses
+    # A balance, so transfers count.
     current_balance = float(db.query(func.sum(Transaction.amount)).scalar() or 0)
 
     today = date.today()
@@ -402,7 +431,9 @@ def monthly_summary(
 
     income_expr = func.sum(case((Transaction.amount > 0, Transaction.amount), else_=0))
     expense_expr = func.sum(case((Transaction.amount < 0, Transaction.amount), else_=0))
-    ie = db.query(income_expr.label("income"), expense_expr.label("expenses")).filter(
+    ie = _exclude_transfers(
+        db.query(income_expr.label("income"), expense_expr.label("expenses"))
+    ).filter(
         Transaction.date >= month_start, Transaction.date <= month_end,
     ).first()
 
@@ -454,11 +485,11 @@ def annual_summary(
     month_expr = func.substr(Transaction.date, 1, 7)
     income_expr = func.sum(case((Transaction.amount > 0, Transaction.amount), else_=0))
     expense_expr = func.sum(case((Transaction.amount < 0, Transaction.amount), else_=0))
-    rows = db.query(
+    rows = _exclude_transfers(db.query(
         month_expr.label("month"),
         income_expr.label("income"),
         expense_expr.label("expenses"),
-    ).filter(Transaction.date.like(f"{year}%")).group_by(month_expr).all()
+    )).filter(Transaction.date.like(f"{year}%")).group_by(month_expr).all()
 
     if not rows:
         return {
@@ -472,11 +503,11 @@ def annual_summary(
     savings = total_income - total_expenses
     savings_rate = round(savings / total_income * 100, 1) if total_income > 0 else 0
 
-    top_cats = db.query(
+    top_cats = _exclude_transfers(db.query(
         Transaction.category,
         func.sum(Transaction.amount).label("total"),
         func.count(Transaction.id).label("count"),
-    ).filter(
+    )).filter(
         Transaction.amount < 0,
         Transaction.date.like(f"{year}%"),
     ).group_by(Transaction.category).order_by(func.sum(Transaction.amount)).limit(8).all()
@@ -574,10 +605,10 @@ def month_comparison(
 ):
     """Side-by-side category spending comparison for two months."""
     def get_cat_totals(m: str) -> dict:
-        rows = db.query(
+        rows = _exclude_transfers(db.query(
             Transaction.category,
             func.sum(Transaction.amount).label("total"),
-        ).filter(
+        )).filter(
             Transaction.amount < 0,
             Transaction.date.like(f"{m}%"),
         ).group_by(Transaction.category).all()
