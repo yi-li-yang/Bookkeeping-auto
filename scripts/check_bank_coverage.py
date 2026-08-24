@@ -1,9 +1,14 @@
 """
 Check which of your banks Enable Banking can actually reach.
 
-This is the gate on the rest of the bank integration: anything not covered
-stays on the manual statement-drop path, so it is worth knowing before any
-sync code is written.
+ANSWERED, AND THE ANSWER IS NONE. Enable Banking covers the EEA only -- 30
+markets, Austria through Sweden. The UK is absent, and every account here is
+UK. See the module docstring in backend/integrations/enablebanking.py.
+
+Kept alongside the dormant client so the question can be re-asked cheaply if
+their coverage ever changes. Run it before writing any Enable Banking sync
+code; that ordering is the whole point of this script, and ignoring it is how
+a full client got built against a provider that cannot reach these accounts.
 
 Usage:
     .venv/Scripts/python.exe scripts/check_bank_coverage.py

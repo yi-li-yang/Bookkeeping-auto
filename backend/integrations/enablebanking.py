@@ -1,10 +1,19 @@
 """
-Enable Banking API client.
+Enable Banking API client. DORMANT -- reaches no account this app tracks.
 
-Enable Banking is a licensed AISP, so it can reach UK and EU banks that do not
-expose an API to individuals directly (Chase UK, for instance, serves only
-FCA-registered TPPs). Its Restricted Production mode is free and scoped to
-accounts you whitelist yourself.
+Enable Banking covers the EEA only: 30 markets, Austria through Sweden. The UK
+is not among them, and post-Brexit it sits outside PSD2, so their platform never
+gained a UK Open Banking stack. Every account here is UK, so nothing this module
+can talk to is relevant.
+
+This was built on the assumption that "the common path for EU/UK indie work"
+(how aggregator sites describe them) implied UK coverage. It does not. Verified
+against https://enablebanking.com/docs/markets/ and the country dropdown in
+their Control Panel, which agree.
+
+Kept rather than deleted because it works -- the JWT authenticates and the
+client is exercised by a full test suite. If Enable Banking adds the UK, or if
+an EEA account ever needs tracking, this is ready. Nothing imports it.
 
 Pure HTTP, no SQLAlchemy, so it is testable against a mock transport. Auth is a
 short-lived RS256 JWT signed with the application's private key rather than a
