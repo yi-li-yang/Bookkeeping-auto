@@ -205,7 +205,8 @@ def test_transactions_map_with_correct_signs_and_categories(db, stub_api):
     t212_sync.sync_account(db, ACCOUNT, include_history=True)
     rows = {t.external_id: t for t in db.query(Transaction).all()}
 
-    deposit = rows["t212:invest:TXN-1"]
+    # external_id is keyed on the Trading 212 account id, not the env var slug.
+    deposit = rows["t212:12345678:TXN-1"]
     assert deposit.amount == 1000.0          # income, positive
     assert deposit.category == "Transfers"
     assert deposit.account_type == "investment"
@@ -213,9 +214,9 @@ def test_transactions_map_with_correct_signs_and_categories(db, stub_api):
     assert deposit.date == "2026-01-10"
     assert deposit.confidence == 1.0         # deterministic, not an LLM guess
 
-    assert rows["t212:invest:TXN-2"].amount == -250.0   # withdrawal, negative
-    assert rows["t212:invest:TXN-3"].amount == -1.50
-    assert rows["t212:invest:TXN-3"].category == "Investment Fees"
+    assert rows["t212:12345678:TXN-2"].amount == -250.0   # withdrawal, negative
+    assert rows["t212:12345678:TXN-3"].amount == -1.50
+    assert rows["t212:12345678:TXN-3"].category == "Investment Fees"
 
 
 def test_dividends_are_recorded(db, stub_api):
@@ -499,3 +500,32 @@ def test_cash_absorbs_price_drift_so_the_total_reconciles_exactly(db, monkeypatc
 
     cash = db.query(InvestmentHolding).filter_by(instrument="CASH").one()
     assert cash.value_gbp == pytest.approx(1000.0 - 893.44, abs=0.01)
+
+
+def test_renaming_the_env_var_does_not_reimport_the_history(db, stub_api, monkeypatch):
+    """
+    Row identity must come from Trading 212's account id, not the env var name.
+
+    Keying on the slug meant that renaming T212_API_KEY_INVEST to
+    ..._STOCKS_ISA changed every external_id and the SourceFile name, so an
+    entire account's history re-imported as new and duplicated.
+    """
+    as_invest = T212Account(slug="invest", api_key_id="k", api_secret="s")
+    as_isa = T212Account(slug="stocks_isa", api_key_id="k", api_secret="s")
+
+    t212_sync.sync_account(db, as_invest, include_history=True)
+    after_first = db.query(Transaction).count()
+    assert after_first > 0
+
+    # Same credentials, same Trading 212 account, different env var name.
+    t212_sync.sync_account(db, as_isa, include_history=True)
+
+    assert db.query(Transaction).count() == after_first
+    assert db.query(SourceFile).filter(SourceFile.file_type == "api").count() == 1
+    # Identity is the account id from account/summary, not the slug.
+    assert db.query(SourceFile).filter_by(filename="trading212:12345678").count() == 1
+
+
+def test_lending_interest_is_income(db):
+    assert t212_sync._signed_amount("LENDING_INTEREST", 0.05) == 0.05
+    assert t212_sync._TRANSACTION_CATEGORIES["LENDING_INTEREST"] == "Interest"

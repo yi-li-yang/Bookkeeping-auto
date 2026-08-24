@@ -48,7 +48,9 @@ _ACCOUNT_LABELS = {
 # payment and a withdrawal all arrive positive -- so direction comes from the
 # type. Only types whose direction is unambiguous are forced; anything else
 # keeps the sign the API gave, since guessing would corrupt the cash flow.
-_INCOME_TYPES = {"DEPOSIT", "INTEREST_ON_FREE_CASH", "INTEREST", "DIVIDEND"}
+_INCOME_TYPES = {
+    "DEPOSIT", "INTEREST_ON_FREE_CASH", "LENDING_INTEREST", "INTEREST", "DIVIDEND",
+}
 _EXPENSE_TYPES = {"WITHDRAW", "WITHDRAWAL", "FEE", "TAX", "CHARGE", "COMMISSION"}
 
 _TRANSACTION_CATEGORIES = {
@@ -61,6 +63,7 @@ _TRANSACTION_CATEGORIES = {
     "CHARGE": "Investment Fees",
     "TAX": "Investment Fees",
     "INTEREST_ON_FREE_CASH": "Interest",
+    "LENDING_INTEREST": "Interest",
     "INTEREST": "Interest",
     "DIVIDEND": "Dividends",
 }
@@ -221,9 +224,22 @@ def _derive_fx_rate(position: dict, value_gbp: float | None) -> float | None:
     return 1.0 if currency == "GBP" else None
 
 
-def _source_file(db: Session, account: T212Account, label: str) -> SourceFile:
+def _account_key(summary: dict, account: T212Account) -> str:
+    """
+    Stable identifier for an account's API-sourced rows.
+
+    Uses Trading 212's own numeric account id rather than the env var name. The
+    env var is only the user's guess at which account a key belongs to, and
+    renaming it must not change row identity -- doing so re-imports the entire
+    history as "new" and duplicates it.
+    """
+    account_id = summary.get("id")
+    return str(account_id) if account_id else account.slug
+
+
+def _source_file(db: Session, account_key: str, label: str) -> SourceFile:
     """Get-or-create the synthetic SourceFile that owns this account's API rows."""
-    filename = f"trading212:{account.slug}"
+    filename = f"trading212:{account_key}"
     row = db.query(SourceFile).filter(SourceFile.filename == filename).one_or_none()
     if row is None:
         row = SourceFile(filename=filename, file_type="api", status="done", row_count=0)
@@ -361,23 +377,26 @@ def _existing_external_ids(db: Session, source_file_id: int) -> set[str]:
     return {r[0] for r in rows}
 
 
-def _transaction_external_id(slug: str, item: dict) -> str:
+def _transaction_external_id(account_key: str, item: dict) -> str:
+    """Stable per-record key. account_key is the Trading 212 account id."""
     reference = item.get("reference")
     if reference:
-        return f"t212:{slug}:{reference}"
+        return f"t212:{account_key}:{reference}"
     return (
-        f"t212:{slug}:{item.get('dateTime')}:{item.get('type')}:{item.get('amount')}"
+        f"t212:{account_key}:{item.get('dateTime')}:{item.get('type')}"
+        f":{item.get('amount')}"
     )
 
 
 def _write_transactions(
-    db: Session, source_file: SourceFile, account_name: str, slug: str, items: list[dict]
+    db: Session, source_file: SourceFile, account_name: str, account_key: str,
+    items: list[dict],
 ) -> int:
     known = _existing_external_ids(db, source_file.id)
     written = 0
 
     for item in items:
-        external_id = _transaction_external_id(slug, item)
+        external_id = _transaction_external_id(account_key, item)
         if external_id in known:
             continue
         known.add(external_id)
@@ -477,13 +496,14 @@ def sync_account(
         summary = client.account_summary()
         positions = client.positions()
         label = _account_label(db, account, summary, positions)
+        account_key = _account_key(summary, account)
 
         transactions: list[dict] = []
         dividends: list[dict] = []
         if include_history:
             source_file_peek = (
                 db.query(SourceFile)
-                .filter(SourceFile.filename == f"trading212:{account.slug}")
+                .filter(SourceFile.filename == f"trading212:{account_key}")
                 .one_or_none()
             )
             known = (
@@ -495,16 +515,16 @@ def sync_account(
             # a re-sync into a single page.
             transactions = client.history_transactions(
                 max_pages=max_pages,
-                stop_when=lambda i: _transaction_external_id(account.slug, i) in known,
+                stop_when=lambda i: _transaction_external_id(account_key, i) in known,
             )
             dividends = client.history_dividends(max_pages=max_pages)
 
-    source_file = _source_file(db, account, label)
+    source_file = _source_file(db, account_key, label)
     holdings_written = _write_holdings(
         db, source_file, label, report_date, positions, summary
     )
     transactions_written = _write_transactions(
-        db, source_file, label, account.slug, transactions
+        db, source_file, label, account_key, transactions
     )
     dividends_written = _write_dividends(db, source_file, label, dividends)
 
