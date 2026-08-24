@@ -321,3 +321,62 @@ def test_forbidden_is_reported_as_permissions_or_burst_not_environment():
     assert "permission" in message.lower()
     # The environment-mismatch advice belongs to 401 and would mislead here.
     assert "environment-specific" not in message
+
+
+# -- order history ---------------------------------------------------------
+
+def test_history_orders_paginates_via_the_full_path_form():
+    """
+    history/orders returns nextPagePath as a full path, like history/dividends
+    and unlike history/transactions. Treating it as a bare query string would
+    send the query as if it were a path and earn a 403.
+    """
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(200, json={
+                "items": [{"order": {"id": 1}}],
+                "nextPagePath": "/api/v0/equity/history/orders?cursor=1759246934711&limit=50",
+            })
+        return httpx.Response(200, json={"items": [{"order": {"id": 2}}], "nextPagePath": None})
+
+    with make_client(handler) as client:
+        items = client.history_orders()
+
+    assert [i["order"]["id"] for i in items] == [1, 2]
+    assert "cursor" not in seen[0]                     # first page is sent bare
+    assert seen[1].endswith("/api/v0/equity/history/orders?cursor=1759246934711&limit=50")
+
+
+def test_history_orders_also_handles_a_bare_query_string_cursor():
+    """The two shapes are handled rather than assumed, since T212 is inconsistent."""
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        if len(seen) == 1:
+            return httpx.Response(200, json={
+                "items": [{"order": {"id": 1}}],
+                "nextPagePath": "limit=50&cursor=ABC",
+            })
+        return httpx.Response(200, json={"items": [], "nextPagePath": None})
+
+    with make_client(handler) as client:
+        client.history_orders()
+
+    assert seen[1].endswith("/api/v0/equity/history/orders?limit=50&cursor=ABC")
+
+
+def test_history_orders_stop_when_can_end_the_scan_early():
+    def handler(request):
+        return httpx.Response(200, json={
+            "items": [{"order": {"id": 1}}, {"order": {"id": 2}}],
+            "nextPagePath": "/api/v0/equity/history/orders?cursor=n&limit=50",
+        })
+
+    with make_client(handler) as client:
+        items = client.history_orders(stop_when=lambda i: i["order"]["id"] == 2)
+
+    assert [i["order"]["id"] for i in items] == [1]

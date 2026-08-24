@@ -62,7 +62,7 @@ SQLite requires copy/drop/rename for that, which risks the only copy of the data
 
 ## Database
 
-Five tables. `transactions` and `investment_holdings` are shared by every
+Six tables. `transactions` and `investment_holdings` are shared by every
 source — API and file ingestion both write to them, which is why the read
 endpoints needed no changes when API sync was added.
 
@@ -73,6 +73,8 @@ endpoints needed no changes when API sync was added.
 - `investment_holdings` — dated snapshots; `report_date` + `account_name`
 - `investment_dividends` — unique on `(account_name, reference)`
 - `sync_runs` — per-connector outcome: `ok` / `error` / `auth_required`
+- `investment_trades` — executed buys and sells from the broker's order
+  history; unique per *fill*, not per order
 
 ## Trading 212 integration
 
@@ -112,6 +114,38 @@ hard way, all of which have regression tests:
    say `BTIP`. Only lowercase suffixes are stripped, so `GOOGL` keeps its `L`.
    Trading 212 also still returns `FB` for Meta, so a name already recorded
    against an ISIN wins.
+
+### Trade history
+
+`history_orders` backfills `investment_trades`. Five things it has to get right:
+
+1. **The payload is nested**: `{"order": {...}, "fill": {...}}`. The `fill` key
+   is *absent* on anything that never executed, so its presence — not the status
+   string — is what marks a real trade. A cancelled order still reports the
+   quantity it wanted; storing it would invent purchases.
+2. **One order can produce several fills**, so rows are keyed on the fill id.
+   Keying on the order id silently merges a partially-filled order into one row.
+3. **`quantity` is signed** (negative on a sell) but `netValue` is not. Magnitude
+   goes in `quantity`, direction in `side`.
+4. **`walletImpact.netValue` follows the wallet the trade settled in, which is
+   not always GBP.** The Invest account settled in USD until 2026-05-04.
+   `value` + `currency` record what was reported; `value_gbp` is filled in only
+   when that currency really is GBP, because converting the rest would mean
+   inventing a historical FX rate.
+5. **Prices are in the instrument's currency, and `GBX` is pence.** `fxRate`
+   carries the conversion (100 for GBX), so the price is stored as quoted.
+
+`--full` on `scripts/sync_t212.py` turns off the stop-at-first-known
+short-circuit. Routine syncs want that short-circuit, but it also means a
+backfill truncated by `max_pages` can never be deepened without it — the second
+run would stop at the newest record the first one stored.
+
+Trades are deliberately **not** written to `transactions`: a £5,000 buy is not
+spending, and all 13 analytics endpoints read that table.
+
+Trades reconcile against holdings for every position except across a **corporate
+action** — NVIDIA's June 2024 10-for-1 split added 2.2965 ISA shares that no
+order explains. A cost basis built by summing trades is wrong for affected names.
 
 Cash is stored as a synthetic `CASH` holding, derived as
 `totalValue - sum(stored position values)`, so the portfolio total reconciles
@@ -175,6 +209,27 @@ Declined transactions carry the amount they would have been; they are skipped,
 or a declined GBP500 payment reads as GBP500 of spending. `account_label()`
 deliberately ignores Monzo's `description` field, which holds the account
 holder's real name on personal accounts.
+
+## Portfolio analysis in Claude Code
+
+Ad-hoc portfolio Q&A and investment research, driven entirely from the chat
+panel — no terminal, no server, no dashboard. **One command**, `/portfolio`,
+which covers holdings questions, research on a candidate not yet owned, and
+refreshing the data; the intent is read from the question rather than declared.
+
+`.claude/skills/portfolio/SKILL.md` holds the grounding and honesty rules and
+is where all the behaviour lives; the command is a thin wrapper over it. Two
+internal helpers back it, called by Claude and never by hand:
+
+- `scripts/portfolio.py` — read-only queries. Opens SQLite with `mode=ro` and
+  refuses anything but a single `SELECT`/`WITH`, so an analysis session cannot
+  alter the books. Resolves each account to *its own* latest `report_date`,
+  unlike `/api/investments/*` which takes a global max and drops an account
+  whose sync failed.
+- `scripts/sync_t212.py` — the writer. Works without `npm run start`.
+
+Answers stay in the chat. The database holds real positions and this repo is
+public, so nothing with figures in it is ever written to the working tree.
 
 ## Ingest files
 

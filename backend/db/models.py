@@ -20,6 +20,7 @@ class SourceFile(Base):
     transactions = relationship("Transaction", back_populates="source_file")
     holdings = relationship("InvestmentHolding", back_populates="source_file")
     dividends = relationship("InvestmentDividend", back_populates="source_file")
+    trades = relationship("InvestmentTrade", back_populates="source_file")
 
 
 class Transaction(Base):
@@ -106,6 +107,51 @@ class InvestmentDividend(Base):
     source_file_id = Column(Integer, ForeignKey("source_files.id"), nullable=False)
 
     source_file = relationship("SourceFile", back_populates="dividends")
+
+
+class InvestmentTrade(Base):
+    """
+    One executed fill from a broker's order history.
+
+    Deliberately not stored in `transactions`: a GBP5,000 buy is not spending,
+    and every analytics endpoint reads that table.
+
+    Two things the Trading 212 payload forces on this schema:
+
+    * A single order can produce several fills, so the fill id -- not the order
+      id -- is what makes a row unique.
+    * `walletImpact.netValue` is denominated in the wallet the trade settled in,
+      which is not always GBP. The Invest account settled in USD until
+      2026-05-04. `value` therefore holds the figure as reported alongside its
+      `currency`, and `value_gbp` is filled in only when that currency really is
+      GBP. Converting the rest would mean inventing a historical FX rate.
+    """
+    __tablename__ = "investment_trades"
+
+    id = Column(Integer, primary_key=True, index=True)
+    account_name = Column(String, nullable=False, index=True)
+    instrument = Column(String, nullable=False)        # ticker symbol, as investment_holdings
+    instrument_name = Column(String, nullable=True)    # full name, e.g. "Intel"
+    ticker = Column(String, nullable=True)             # raw, e.g. BTIPl_EQ
+    isin = Column(String, nullable=True, index=True)
+    side = Column(String, nullable=False)              # BUY / SELL
+    quantity = Column(Float, nullable=False)           # absolute; direction is `side`
+    price = Column(Float, nullable=True)               # in instrument currency (GBX = pence)
+    instrument_currency = Column(String, nullable=True)
+    fx_rate = Column(Float, nullable=True)             # instrument currency -> wallet currency
+    value = Column(Float, nullable=False)              # net cash impact, fees included
+    currency = Column(String, nullable=True)           # wallet currency of `value`
+    value_gbp = Column(Float, nullable=True)           # only when currency == GBP
+    fees = Column(Float, nullable=True)                # positive; charged in `currency`
+    realised_pl = Column(Float, nullable=True)         # sells only, in `currency`
+    executed_at = Column(String, nullable=False)       # full ISO datetime, not truncated
+    status = Column(String, nullable=True)             # always FILLED today
+    order_id = Column(String, nullable=True)
+    external_id = Column(String, nullable=True, index=True)
+    source_file_id = Column(Integer, ForeignKey("source_files.id"), nullable=False)
+    raw_row = Column(Text, nullable=True)
+
+    source_file = relationship("SourceFile", back_populates="trades")
 
 
 class SyncRun(Base):

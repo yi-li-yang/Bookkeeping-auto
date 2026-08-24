@@ -23,6 +23,7 @@ from backend.config import settings
 from backend.db.models import (
     InvestmentDividend,
     InvestmentHolding,
+    InvestmentTrade,
     SourceFile,
     SyncRun,
     Transaction,
@@ -483,13 +484,126 @@ def _write_dividends(
     return written
 
 
+def _trade_external_id(account_key: str, fill: dict) -> str:
+    """
+    Keyed on the fill, not the order: one order can execute in several fills,
+    and keying on the order id would collapse them into a single row.
+    """
+    return f"t212:{account_key}:fill:{fill.get('id')}"
+
+
+def _existing_trade_ids(db: Session, source_file_id: int) -> set[str]:
+    rows = (
+        db.query(InvestmentTrade.external_id)
+        .filter(InvestmentTrade.source_file_id == source_file_id)
+        .filter(InvestmentTrade.external_id.isnot(None))
+        .all()
+    )
+    return {r[0] for r in rows}
+
+
+def _write_trades(
+    db: Session, source_file: SourceFile, account_name: str, account_key: str,
+    items: list[dict],
+) -> int:
+    """
+    Persist executed fills from the order history.
+
+    Only items carrying a `fill` are stored. A cancelled or rejected order still
+    reports the quantity it would have traded, so writing those would invent
+    purchases that never happened -- the same failure mode as counting a
+    declined card payment as spending.
+    """
+    known = _existing_trade_ids(db, source_file.id)
+    written = 0
+
+    for item in items:
+        order = item.get("order") or {}
+        fill = item.get("fill")
+        if not fill:
+            continue  # never executed
+
+        external_id = _trade_external_id(account_key, fill)
+        if external_id in known:
+            continue
+        known.add(external_id)
+
+        executed_at = fill.get("filledAt") or order.get("createdAt") or ""
+        quantity = fill.get("quantity")
+        wallet = fill.get("walletImpact") or {}
+        value = wallet.get("netValue")
+        if not executed_at or quantity is None or value is None:
+            continue
+
+        instrument = order.get("instrument") or {}
+        isin = instrument.get("isin")
+        raw_ticker = order.get("ticker") or instrument.get("ticker")
+
+        # Quantity arrives signed (negative on a sell); direction is kept in
+        # `side` so the magnitude reads the same for both.
+        side = (order.get("side") or ("SELL" if quantity < 0 else "BUY")).upper()
+
+        # Taxes arrive negative and in the wallet currency; store the magnitude.
+        taxes = wallet.get("taxes") or []
+        fees = sum(abs(t.get("quantity") or 0.0) for t in taxes) or None
+
+        # netValue follows the wallet the trade settled in, which has not always
+        # been GBP -- so only claim value_gbp when it genuinely is.
+        currency = wallet.get("currency")
+        value_gbp = float(value) if currency == "GBP" else None
+        if currency and currency != "GBP":
+            logger.debug(
+                "Trade %s settled in %s; value_gbp left NULL rather than "
+                "converting at an invented rate.", external_id, currency,
+            )
+
+        db.add(
+            InvestmentTrade(
+                account_name=account_name,
+                instrument=_instrument_name(db, isin, raw_ticker or ""),
+                instrument_name=instrument.get("name"),
+                ticker=raw_ticker,
+                isin=isin,
+                side=side,
+                quantity=abs(float(quantity)),
+                price=fill.get("price"),
+                instrument_currency=instrument.get("currency"),
+                fx_rate=wallet.get("fxRate"),
+                value=float(value),
+                currency=currency,
+                value_gbp=value_gbp,
+                fees=fees,
+                realised_pl=wallet.get("realisedProfitLoss"),
+                executed_at=executed_at,
+                status=order.get("status"),
+                order_id=str(order.get("id")) if order.get("id") is not None else None,
+                external_id=external_id,
+                source_file_id=source_file.id,
+                raw_row=json.dumps(item),
+            )
+        )
+        written += 1
+
+    return written
+
+
 def sync_account(
     db: Session,
     account: T212Account,
     include_history: bool = True,
     max_pages: int = 20,
+    full_history: bool = False,
 ) -> dict:
-    """Sync one Trading 212 account. Raises on failure; sync_all captures those."""
+    """
+    Sync one Trading 212 account. Raises on failure; sync_all captures those.
+
+    `full_history` turns off the stop-at-first-known short-circuit. Routine
+    syncs want that short-circuit -- it keeps a re-sync to a single page -- but
+    it also means a backfill truncated by `max_pages` can never be deepened,
+    because the second run stops at the newest record the first one stored.
+    Writes stay deduplicated by external id, so a full pass costs API calls and
+    nothing else.
+    """
     report_date = date.today().isoformat()
 
     with Trading212Client(account, env=settings.t212_env) as client:
@@ -500,6 +614,7 @@ def sync_account(
 
         transactions: list[dict] = []
         dividends: list[dict] = []
+        orders: list[dict] = []
         if include_history:
             source_file_peek = (
                 db.query(SourceFile)
@@ -511,13 +626,29 @@ def sync_account(
                 if source_file_peek
                 else set()
             )
+            known_fills = (
+                _existing_trade_ids(db, source_file_peek.id)
+                if source_file_peek
+                else set()
+            )
             # Newest-first, so stopping at the first already-stored record turns
             # a re-sync into a single page.
             transactions = client.history_transactions(
                 max_pages=max_pages,
-                stop_when=lambda i: _transaction_external_id(account_key, i) in known,
+                stop_when=None if full_history
+                else (lambda i: _transaction_external_id(account_key, i) in known),
             )
             dividends = client.history_dividends(max_pages=max_pages)
+            # Unexecuted orders carry no fill and are never stored, so they must
+            # not stop the scan either -- otherwise a cancelled order sitting at
+            # the top of the history would end every future re-sync at page one.
+            orders = client.history_orders(
+                max_pages=max_pages,
+                stop_when=None if full_history else (
+                    lambda i: bool(i.get("fill"))
+                    and _trade_external_id(account_key, i["fill"]) in known_fills
+                ),
+            )
 
     source_file = _source_file(db, account_key, label)
     holdings_written = _write_holdings(
@@ -527,6 +658,7 @@ def sync_account(
         db, source_file, label, account_key, transactions
     )
     dividends_written = _write_dividends(db, source_file, label, dividends)
+    trades_written = _write_trades(db, source_file, label, account_key, orders)
 
     source_file.row_count = holdings_written
     db.commit()
@@ -538,13 +670,19 @@ def sync_account(
         "holdings": holdings_written,
         "transactions": transactions_written,
         "dividends": dividends_written,
+        "trades": trades_written,
         "total_value_gbp": summary.get("totalValue"),
         "cash_gbp": _cash_value(summary),
         "error": None,
     }
 
 
-def sync_all(db: Session, include_history: bool = True, max_pages: int = 20) -> dict:
+def sync_all(
+    db: Session,
+    include_history: bool = True,
+    max_pages: int = 20,
+    full_history: bool = False,
+) -> dict:
     """
     Sync every configured account, sequentially.
 
@@ -561,15 +699,17 @@ def sync_all(db: Session, include_history: bool = True, max_pages: int = 20) -> 
 
         try:
             result = sync_account(
-                db, account, include_history=include_history, max_pages=max_pages
+                db, account, include_history=include_history, max_pages=max_pages,
+                full_history=full_history,
             )
             run.status = "ok"
             run.items_written = (
                 result["holdings"] + result["transactions"] + result["dividends"]
+                + result["trades"]
             )
             run.message = (
                 f"{result['holdings']} holdings, {result['transactions']} transactions, "
-                f"{result['dividends']} dividends"
+                f"{result['dividends']} dividends, {result['trades']} trades"
             )
         except T212AuthError as exc:
             db.rollback()
@@ -604,6 +744,7 @@ def _error_result(account: T212Account, message: str) -> dict:
         "holdings": 0,
         "transactions": 0,
         "dividends": 0,
+        "trades": 0,
         "total_value_gbp": None,
         "cash_gbp": None,
         "error": message,

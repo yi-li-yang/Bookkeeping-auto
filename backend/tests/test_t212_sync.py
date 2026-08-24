@@ -14,6 +14,7 @@ from backend.db.database import Base
 from backend.db.models import (
     InvestmentDividend,
     InvestmentHolding,
+    InvestmentTrade,
     SourceFile,
     SyncRun,
     Transaction,
@@ -105,6 +106,102 @@ DIVIDENDS = [
 ]
 
 
+
+# Shaped from a real /equity/history/orders response. The nesting, the signed
+# quantities, the absent `fill` on unexecuted orders and the wallet currency
+# that is not always GBP are all as the API returns them.
+ORDERS = [
+    {   # plain buy: USD instrument, GBP wallet, conversion fee charged
+        "order": {
+            "id": 55707565256, "ticker": "INTC_US_EQ", "quantity": 26.0,
+            "filledQuantity": 26.0, "status": "FILLED", "currency": "GBP",
+            "side": "BUY", "createdAt": "2026-08-14T14:05:59.000Z",
+            "instrument": {"ticker": "INTC_US_EQ", "name": "Intel",
+                           "isin": "US4581401001", "currency": "USD"},
+        },
+        "fill": {
+            "id": 55707565258, "quantity": 26.0, "price": 106.51, "type": "TRADE",
+            "filledAt": "2026-08-14T14:05:59.000Z",
+            "walletImpact": {
+                "currency": "GBP", "netValue": 2046.36, "fxRate": 1.35528801,
+                "taxes": [{"name": "CURRENCY_CONVERSION_FEE", "quantity": -3.06,
+                           "currency": "GBP"}],
+            },
+        },
+    },
+    {   # sell: quantity arrives negative, and a realised P&L comes with it
+        "order": {
+            "id": 52752573653, "ticker": "ADSd_EQ", "quantity": -0.07797034,
+            "filledQuantity": -0.07797034, "status": "FILLED", "currency": "GBP",
+            "side": "SELL", "createdAt": "2026-06-16T09:39:13.000Z",
+            "instrument": {"ticker": "ADSd_EQ", "name": "Adidas",
+                           "isin": "DE000A1EWWW0", "currency": "EUR"},
+        },
+        "fill": {
+            "id": 52752573662, "quantity": -0.07797034, "price": 174.40,
+            "type": "TRADE", "filledAt": "2026-06-16T09:39:15.000Z",
+            "walletImpact": {
+                "currency": "GBP", "netValue": 11.74, "realisedProfitLoss": -0.07,
+                "fxRate": 1.15629483,
+                "taxes": [{"name": "CURRENCY_CONVERSION_FEE", "quantity": -0.02,
+                           "currency": "GBP"}],
+            },
+        },
+    },
+    {   # cancelled: no fill key at all, but still reports the quantity it wanted
+        "order": {
+            "id": 53854719097, "ticker": "INTC_US_EQ", "quantity": 12.0,
+            "filledQuantity": 0, "limitPrice": 100.0, "status": "CANCELLED",
+            "currency": "GBP", "side": "BUY",
+            "createdAt": "2026-07-08T12:13:55.000Z",
+            "instrument": {"ticker": "INTC_US_EQ", "name": "Intel",
+                           "isin": "US4581401001", "currency": "USD"},
+        },
+    },
+    {   # rejected: likewise no fill
+        "order": {
+            "id": 53854719098, "ticker": "TSLA_US_EQ", "quantity": 5.0,
+            "filledQuantity": 0, "status": "REJECTED", "currency": "GBP",
+            "side": "BUY", "createdAt": "2026-07-09T12:13:55.000Z",
+            "instrument": {"ticker": "TSLA_US_EQ", "name": "Tesla",
+                           "isin": "US88160R1014", "currency": "USD"},
+        },
+    },
+    {   # GBX instrument: price is in pence and fxRate 100 carries the /100
+        "order": {
+            "id": 51000000001, "ticker": "SGLNl_EQ", "quantity": -4.85942,
+            "filledQuantity": -4.85942, "status": "FILLED", "currency": "GBP",
+            "side": "SELL", "createdAt": "2026-04-02T10:00:00.000Z",
+            "instrument": {"ticker": "SGLNl_EQ", "name": "iShares Physical Gold",
+                           "isin": "IE00B4ND3602", "currency": "GBX"},
+        },
+        "fill": {
+            "id": 51000000002, "quantity": -4.85942, "price": 6079.0,
+            "type": "TRADE", "filledAt": "2026-04-02T10:00:01.000Z",
+            "walletImpact": {"currency": "GBP", "netValue": 295.40,
+                             "realisedProfitLoss": 40.10, "fxRate": 100,
+                             "taxes": []},
+        },
+    },
+    {   # settled in a USD wallet, as the Invest account did until 2026-05-04
+        "order": {
+            "id": 50563557150, "ticker": "TSLA_US_EQ", "quantity": -18.94998788,
+            "filledQuantity": -18.94998788, "status": "FILLED", "currency": "USD",
+            "side": "SELL", "createdAt": "2026-05-04T18:22:00.000Z",
+            "instrument": {"ticker": "TSLA_US_EQ", "name": "Tesla",
+                           "isin": "US88160R1014", "currency": "USD"},
+        },
+        "fill": {
+            "id": 50563557151, "quantity": -18.94998788, "price": 391.29,
+            "type": "TRADE", "filledAt": "2026-05-04T18:22:01.000Z",
+            "walletImpact": {"currency": "USD", "netValue": 7414.94,
+                             "realisedProfitLoss": 1244.28, "fxRate": 1,
+                             "taxes": []},
+        },
+    },
+]
+
+
 @pytest.fixture
 def db(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
@@ -127,6 +224,8 @@ def stub_api(monkeypatch):
             return httpx.Response(200, json={"items": TRANSACTIONS, "nextPagePath": None})
         if "history/dividends" in path:
             return httpx.Response(200, json={"items": DIVIDENDS, "nextPagePath": None})
+        if "history/orders" in path:
+            return httpx.Response(200, json={"items": ORDERS, "nextPagePath": None})
         return httpx.Response(404)
 
     patch_client(monkeypatch, handler)
@@ -227,6 +326,153 @@ def test_dividends_are_recorded(db, stub_api):
     assert div.paid_on == "2026-02-15"
     assert div.dividend_type == "ORDINARY"
     assert div.reference == "DIV-1"
+
+
+# -- trades ----------------------------------------------------------------
+
+def test_only_executed_orders_become_trades(db, stub_api):
+    """A cancelled or rejected order still reports a quantity; it is not a trade."""
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    trades = db.query(InvestmentTrade).all()
+    assert len(trades) == 4                      # six orders, two never executed
+    statuses = {t.status for t in trades}
+    assert statuses == {"FILLED"}
+    assert not db.query(InvestmentTrade).filter(
+        InvestmentTrade.order_id.in_(["53854719097", "53854719098"])
+    ).count()
+
+
+def test_a_buy_maps_with_fees_folded_into_value(db, stub_api):
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    buy = db.query(InvestmentTrade).filter_by(order_id="55707565256").one()
+    assert buy.side == "BUY"
+    assert buy.quantity == 26.0
+    assert buy.price == 106.51
+    assert buy.isin == "US4581401001"
+    assert buy.instrument_currency == "USD"      # instrument, not wallet
+    assert buy.currency == "GBP"                 # wallet the trade settled in
+    assert buy.value == 2046.36
+    assert buy.value_gbp == 2046.36
+    assert buy.fees == 3.06                      # stored positive, arrives negative
+    assert buy.realised_pl is None               # buys realise nothing
+
+
+def test_a_sell_stores_positive_quantity_with_direction_in_side(db, stub_api):
+    """Quantity arrives negative on a sell; magnitude and direction are split."""
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    sell = db.query(InvestmentTrade).filter_by(order_id="52752573653").one()
+    assert sell.side == "SELL"
+    assert sell.quantity == pytest.approx(0.07797034)
+    assert sell.quantity > 0
+    assert sell.realised_pl == -0.07
+
+
+def test_value_gbp_is_null_when_the_trade_did_not_settle_in_gbp(db, stub_api):
+    """
+    The Invest account settled in USD until 2026-05-04. Copying netValue into a
+    GBP column would silently misstate those trades by the exchange rate.
+    """
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    usd = db.query(InvestmentTrade).filter_by(order_id="50563557150").one()
+    assert usd.currency == "USD"
+    assert usd.value == 7414.94                  # faithful to what was reported
+    assert usd.value_gbp is None                 # and no invented conversion
+    assert usd.realised_pl == 1244.28
+
+
+def test_gbx_price_is_stored_in_pence_with_the_rate_that_converts_it(db, stub_api):
+    """
+    London listings quote in pence. The API carries the /100 in fxRate, so the
+    price stays as quoted rather than being silently rebased.
+    """
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    gbx = db.query(InvestmentTrade).filter_by(order_id="51000000001").one()
+    assert gbx.instrument_currency == "GBX"
+    assert gbx.price == 6079.0
+    assert gbx.fx_rate == 100
+    assert gbx.value_gbp == 295.40
+    assert gbx.quantity * gbx.price / gbx.fx_rate == pytest.approx(295.40, abs=0.05)
+
+
+def test_trades_use_the_same_instrument_symbol_as_holdings(db, stub_api):
+    """
+    `instrument` is the normalised ticker everywhere in this schema, so trades
+    join to holdings on it. The raw ticker and the full name are kept alongside
+    rather than replacing it -- normalise_ticker is lossy (SGLNl_EQ -> SGLN).
+    """
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    gbx = db.query(InvestmentTrade).filter_by(order_id="51000000001").one()
+    assert gbx.instrument == "SGLN"
+    assert gbx.ticker == "SGLNl_EQ"
+    assert gbx.instrument_name == "iShares Physical Gold"
+
+
+def test_resyncing_writes_no_duplicate_trades(db, stub_api):
+    first = t212_sync.sync_account(db, ACCOUNT, include_history=True)
+    assert first["trades"] == 4
+
+    second = t212_sync.sync_account(db, ACCOUNT, include_history=True)
+    assert second["trades"] == 0
+    assert db.query(InvestmentTrade).count() == 4
+
+
+def test_two_fills_of_one_order_are_two_trades(db, stub_api, monkeypatch):
+    """
+    Keying on the order id would collapse a partially-filled order into a single
+    row and lose half the position.
+    """
+    split = [
+        {"order": dict(ORDERS[0]["order"]),
+         "fill": {**ORDERS[0]["fill"], "id": 900001, "quantity": 10.0}},
+        {"order": dict(ORDERS[0]["order"]),
+         "fill": {**ORDERS[0]["fill"], "id": 900002, "quantity": 16.0}},
+    ]
+    monkeypatch.setattr(t212_sync.Trading212Client, "history_orders",
+                        lambda self, **kw: split)
+
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    rows = db.query(InvestmentTrade).all()
+    assert len(rows) == 2
+    assert sorted(r.quantity for r in rows) == [10.0, 16.0]
+    assert len({r.external_id for r in rows}) == 2
+
+
+def test_an_unexecuted_order_does_not_end_the_scan_early(db, stub_api, monkeypatch):
+    """
+    Re-syncs stop at the first already-stored record. A cancelled order is never
+    stored, so if it were allowed to match, one sitting at the top of the
+    history would truncate every future backfill.
+    """
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    seen = {}
+
+    def capture(self, max_pages=20, stop_when=None):
+        seen["stop_when"] = stop_when
+        return ORDERS
+
+    monkeypatch.setattr(t212_sync.Trading212Client, "history_orders", capture)
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    stop_when = seen["stop_when"]
+    assert stop_when(ORDERS[2]) is False          # cancelled -> keep scanning
+    assert stop_when(ORDERS[0]) is True           # already stored -> stop
+
+
+def test_pdf_and_api_trades_do_not_pollute_the_transactions_table(db, stub_api):
+    """Trades are not cash flow; analytics must never see a buy as spending."""
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    descriptions = [t.description for t in db.query(Transaction).all()]
+    assert all("Intel" not in d and "Tesla" not in d for d in descriptions)
+    assert db.query(Transaction).count() == len(TRANSACTIONS)
 
 
 # -- idempotency -----------------------------------------------------------

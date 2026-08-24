@@ -304,6 +304,19 @@ class Trading212Client:
             "/equity/history/dividends", max_pages=max_pages, stop_when=stop_when
         )
 
+    def history_orders(self, max_pages: int = 20, stop_when=None) -> list[dict]:
+        """
+        Executed and unexecuted orders, newest first.
+
+        Each item is `{"order": {...}, "fill": {...}}`, and the `fill` key is
+        absent for anything that never executed -- so its presence, not the
+        status string, is what marks a real trade. One order can yield several
+        fills, which is why callers key on the fill id.
+        """
+        return self._paginate(
+            "/equity/history/orders", max_pages=max_pages, stop_when=stop_when
+        )
+
 
 def candidate_accounts(settings=None) -> list[T212Account]:
     """Every complete key+secret pair found in the environment."""
