@@ -38,17 +38,46 @@ _OVERLAP_DAYS = 3
 _POT_SCHEME = "uk_retail_pot"
 
 
+# One label per Monzo account type. A single "Monzo" label was wrong: a user
+# can hold a current account, a Flex credit account, a rewards pot and a joint
+# account at once, and merging them under one name makes them indistinguishable
+# in every chart and breaks credit-card balance matching, which keys on
+# account_name.
+_ACCOUNT_LABELS = {
+    "uk_retail": "Monzo",
+    "uk_retail_joint": "Monzo Joint",
+    "uk_monzo_flex": "Monzo Flex",
+    "uk_rewards": "Monzo Rewards",
+    "uk_business": "Monzo Business",
+}
+
+# Monzo Flex is instalment credit, not a current account. Typed as `bank` it
+# would count as cash in net worth and never match its credit_cards row.
+_CREDIT_ACCOUNT_TYPES = {"uk_monzo_flex"}
+
+
 def account_label(account: dict) -> str:
     """
-    A stable display name.
+    A stable display name, one per account.
 
-    Deliberately not the account's `description` -- for a personal account Monzo
-    sets that to the account holder's name, which would put the user's real name
-    on every row and in every chart legend.
+    Deliberately not the account's `description` -- Monzo sets that to the
+    account holder's name (or a raw internal id), which would put the user's
+    real name on every row and in every chart legend.
     """
-    if account.get("type") == "uk_retail_joint":
-        return "Monzo Joint"
-    return "Monzo"
+    monzo_type = account.get("type") or ""
+    known = _ACCOUNT_LABELS.get(monzo_type)
+    if known:
+        return known
+
+    # An unrecognised type must still get a distinct name rather than being
+    # merged into another account's history.
+    suffix = monzo_type.removeprefix("uk_").replace("_", " ").title()
+    return f"Monzo {suffix}".strip() if suffix else "Monzo"
+
+
+def account_kind(account: dict) -> str:
+    """`account_type` for the transactions table."""
+    return "credit_card" if account.get("type") in _CREDIT_ACCOUNT_TYPES else "bank"
 
 
 def _source_file(db: Session, account_id: str, label: str) -> SourceFile:
@@ -187,6 +216,7 @@ def _categorise(rows: list[dict]) -> dict[int, dict]:
 
 def _write_transactions(
     db: Session, source_file: SourceFile, label: str, items: list[dict],
+    kind: str = "bank",
 ) -> int:
     known = _existing_external_ids(db, source_file.id)
 
@@ -238,7 +268,7 @@ def _write_transactions(
                 amount=amount,
                 category=category,
                 account_name=label,
-                account_type="bank",
+                account_type=kind,
                 source_file_id=source_file.id,
                 confidence=confidence,
                 is_user_edited=False,
@@ -261,7 +291,7 @@ def sync_account(
 
     since = _since_for(db, source_file.id, full_history)
     items = client.transactions(account_id, since=since, max_pages=max_pages)
-    written = _write_transactions(db, source_file, label, items)
+    written = _write_transactions(db, source_file, label, items, account_kind(account))
 
     # Flush first: the count below must include the rows just added, and
     # adding `written` to a post-autoflush count would double them.

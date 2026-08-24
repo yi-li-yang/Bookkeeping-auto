@@ -50,6 +50,13 @@ _PAGE_LIMIT = 100
 # mid-run.
 _EXPIRY_LEEWAY_SECONDS = 300
 
+# 403 bodies that mean "the user has not approved this client in the app yet"
+# rather than "these credentials are wrong".
+_PENDING_APPROVAL_CODES = (
+    "insufficient_permissions",
+    "verification_required",
+)
+
 
 class MonzoError(RuntimeError):
     """Any Monzo API failure."""
@@ -237,9 +244,15 @@ class MonzoClient:
 
             if response.status_code == 403:
                 body = response.text[:300]
-                # Pending in-app approval, not a broken token. Told apart by the
-                # error code, since both arrive as a bare 403.
-                if "verification_required" in body:
+                # Pending in-app approval, not a broken token. Both arrive as a
+                # bare 403, so they are told apart by the error code.
+                #
+                # Monzo uses two codes for this and the docs mention neither:
+                # `forbidden.insufficient_permissions` is what a freshly
+                # authorised client actually gets before the user taps Approve,
+                # observed live. Keep `verification_required` too, which is what
+                # other endpoints have been reported to return.
+                if any(code in body for code in _PENDING_APPROVAL_CODES):
                     raise MonzoApprovalRequired(
                         "Monzo is waiting for you to approve data access in the "
                         "app. Open Monzo on your phone and accept the request, "

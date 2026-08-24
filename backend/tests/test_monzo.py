@@ -210,6 +210,24 @@ def test_pending_in_app_approval_is_not_reported_as_a_broken_token():
     assert "approve" in str(excinfo.value).lower()
 
 
+def test_the_code_a_fresh_client_actually_returns_is_recognised():
+    """
+    Observed live: a newly authorised client gets
+    `forbidden.insufficient_permissions`, not the `verification_required` the
+    community threads describe. Matching only the documented string reported a
+    hard error and stopped the retry loop.
+    """
+    def handler(request):
+        return httpx.Response(403, json={
+            "code": "forbidden.insufficient_permissions",
+            "message": "Access forbidden due to insufficient permissions",
+        })
+
+    with make_client(handler) as client:
+        with pytest.raises(MonzoApprovalRequired):
+            client.accounts()
+
+
 def test_an_expired_access_token_raises_autherror():
     def handler(request):
         return httpx.Response(401, json={"code": "unauthorized.bad_access_token.expired"})
@@ -267,7 +285,36 @@ def test_account_label_does_not_leak_the_account_holders_name():
     )
     assert label == "Monzo"
     assert "Jane" not in label
-    assert monzo_sync.account_label({"type": "uk_retail_joint"}) == "Monzo Joint"
+
+
+def test_every_account_type_gets_a_distinct_label():
+    """
+    One label for all of them merged a current account, a Flex credit account
+    and a rewards pot into a single indistinguishable history -- and broke
+    credit-card balance matching, which keys on account_name.
+    """
+    labels = [
+        monzo_sync.account_label({"type": t})
+        for t in ("uk_retail", "uk_retail_joint", "uk_monzo_flex", "uk_rewards")
+    ]
+    assert labels == ["Monzo", "Monzo Joint", "Monzo Flex", "Monzo Rewards"]
+    assert len(set(labels)) == len(labels)
+
+
+def test_an_unknown_account_type_still_gets_its_own_name():
+    """A type Monzo adds later must not silently merge into the current account."""
+    assert monzo_sync.account_label({"type": "uk_savings_pot"}) == "Monzo Savings Pot"
+    assert monzo_sync.account_label({}) == "Monzo"
+
+
+def test_monzo_flex_is_a_credit_card_not_a_bank_account():
+    """
+    Flex is instalment credit. Typed as `bank` it counts as cash in net worth
+    and never matches its credit_cards row.
+    """
+    assert monzo_sync.account_kind({"type": "uk_monzo_flex"}) == "credit_card"
+    assert monzo_sync.account_kind({"type": "uk_retail"}) == "bank"
+    assert monzo_sync.account_kind({"type": "uk_retail_joint"}) == "bank"
 
 
 # -- pagination -------------------------------------------------------------
@@ -526,3 +573,17 @@ def test_the_raw_payload_is_kept(db, no_llm):
     raw = json.loads(db.query(Transaction).one().raw_row)
     assert raw["category"] == "groceries"
     assert raw["local_currency"] == "USD"
+
+
+def test_flex_transactions_are_stored_as_credit_card(db, no_llm):
+    """End to end: the account type must reach the stored row, not stop at the label."""
+    def handler(request):
+        return httpx.Response(200, json={"transactions": [txn("tx_f", -2000)]})
+
+    flex = {"id": "acc_flex", "type": "uk_monzo_flex", "description": "monzoflex_x"}
+    with make_client(handler) as client:
+        monzo_sync.sync_account(db, client, flex)
+
+    row = db.query(Transaction).one()
+    assert row.account_name == "Monzo Flex"
+    assert row.account_type == "credit_card"
