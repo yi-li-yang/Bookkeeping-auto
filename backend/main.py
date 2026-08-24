@@ -10,6 +10,7 @@ from backend.api import (
 )
 from backend.config import settings
 from backend.db.database import init_db
+from backend.watcher import InputWatcher
 
 logging.basicConfig(level=logging.INFO)
 
@@ -19,7 +20,19 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    yield
+
+    watcher = None
+    if settings.auto_ingest:
+        watcher = InputWatcher(settings.input_dir, settings.auto_ingest_poll_seconds)
+        watcher.start()
+    else:
+        logger.info("Auto-ingest disabled (AUTO_INGEST=false); use POST /api/ingest.")
+
+    try:
+        yield
+    finally:
+        if watcher is not None:
+            await watcher.stop()
 
 
 app = FastAPI(title="Bookkeeping Auto API", lifespan=lifespan)

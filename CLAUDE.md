@@ -179,9 +179,26 @@ holder's real name on personal accounts.
 ## Ingest files
 
 1. Copy CSV/PDF statements into `data/input/`
-2. Click **Ingest Files** in the dashboard, or `curl -X POST http://localhost:8000/api/ingest`
+2. `backend/watcher.py` polls that folder every 20s and ingests new files
+   automatically. Click **Ingest Files** or `curl -X POST /api/ingest` to force
+   a run.
 3. Files are processed once; re-running skips them. `?force=true` re-does files
    under `INPUT_DIR` and never touches API-sourced rows.
+
+The watcher is a poll, not a filesystem-event library: no extra dependency,
+identical behaviour on every filesystem, and `scan_and_ingest` already skips
+processed files. Two rules it enforces that the manual path does not:
+
+- **A file is read only after two consecutive polls see it unchanged.** A
+  browser download is visible from its first byte, and half a PDF parses into
+  plausible nonsense rather than failing.
+- **A file whose `status` is `error` is never retried automatically.** Each
+  attempt costs an LLM call and the poll is every 20s. `POST /api/ingest` still
+  retries it on request.
+
+This reverses commit 77c3d25 ("changed ingestion method to manual only"), which
+removed a thread that re-ingested on *every startup*. The watcher reacts to a
+new file instead, and `AUTO_INGEST=false` turns it off.
 
 ## LLM behaviour
 

@@ -115,11 +115,17 @@ declined payments are skipped.
 
 ### Statements (manual)
 
-1. Copy CSV or PDF statements into `data/input/`
-2. Click **Ingest Files** in the dashboard, or:
-   ```bash
-   curl -X POST http://localhost:8000/api/ingest
-   ```
+Copy CSV or PDF statements into `data/input/` — that is the whole workflow.
+The app watches that folder and ingests anything new within about 20 seconds,
+so there is nothing to click. A file is only read once it has stopped changing,
+so dropping in a part-downloaded PDF is safe.
+
+To ingest on demand instead, set `AUTO_INGEST=false` and use the **Ingest
+Files** button, or:
+
+```bash
+curl -X POST http://localhost:8000/api/ingest
+```
 
 Files are processed once; re-running skips anything already done. Investment
 statement PDFs are recognised and parsed into holdings rather than transactions.

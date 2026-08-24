@@ -66,6 +66,10 @@ class Settings:
     sync_interval_minutes: int = 360
     sync_on_startup: bool = True
 
+    # Watch INPUT_DIR and ingest new statements without a manual trigger.
+    auto_ingest: bool = True
+    auto_ingest_poll_seconds: int = 20
+
     @property
     def monzo_configured(self) -> bool:
         return bool(self.monzo_client_id and self.monzo_client_secret)
@@ -119,6 +123,8 @@ class Settings:
             ),
             sync_interval_minutes=_env_int("SYNC_INTERVAL_MINUTES", 360),
             sync_on_startup=_env_bool("SYNC_ON_STARTUP", True),
+            auto_ingest=_env_bool("AUTO_INGEST", True),
+            auto_ingest_poll_seconds=_env_int("AUTO_INGEST_POLL_SECONDS", 20),
         )
         # Replaces the Dockerfile's `RUN mkdir -p /app/data/input`.
         settings.db_path.parent.mkdir(parents=True, exist_ok=True)
