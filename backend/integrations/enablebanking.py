@@ -46,6 +46,17 @@ class EBConsentExpired(EBAuthError):
     """The bank consent has lapsed and the user must reauthorise."""
 
 
+class EBApplicationInactive(EBAuthError):
+    """
+    The application is registered but not yet activated.
+
+    A freshly registered restricted-production application stays inactive until
+    at least one account is linked, and every endpoint returns 403 until then.
+    Credentials are fine in this state, so it must not be reported as an auth
+    failure -- the fix is to link an account, not to re-check the key.
+    """
+
+
 class EBRateLimitError(EBError):
     """429 that survived the retry budget."""
 
@@ -158,6 +169,19 @@ class EnableBankingClient:
 
             if response.status_code in (401, 403):
                 body = response.text[:300]
+                # An inactive application 403s on every endpoint, including
+                # /aspsps, even though the JWT verified. Check this before the
+                # path-based split below, which would otherwise call it a
+                # credentials problem and send you re-checking a working key.
+                if "not active" in body.lower():
+                    raise EBApplicationInactive(
+                        "Enable Banking application "
+                        f"{self.application_id} is registered but not active. "
+                        "Link at least one account in the Control Panel "
+                        "(Country -> ASPSP -> Usage type -> Link); activation "
+                        "follows automatically. Credentials are fine -- the "
+                        "JWT was accepted."
+                    )
                 # A lapsed bank consent and bad app credentials both surface as
                 # 401/403, but they need different fixes, so separate them.
                 if "session" in path.lower() or "account" in path.lower():

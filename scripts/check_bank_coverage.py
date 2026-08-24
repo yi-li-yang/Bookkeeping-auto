@@ -50,8 +50,15 @@ def main() -> int:
         print("\nThen re-run this script.")
         return 2
 
-    with eb.client_from_settings(settings) as client:
-        banks = client.aspsps(country=args.country, psu_type=args.psu_type)
+    try:
+        with eb.client_from_settings(settings) as client:
+            banks = client.aspsps(country=args.country, psu_type=args.psu_type)
+    except eb.EBApplicationInactive as exc:
+        print(f"{exc}\n")
+        print("The ASPSP dropdown in the Control Panel lists the same banks "
+              "this script would, so you can read coverage off it directly "
+              "while the application is inactive.")
+        return 3
 
     print(f"Enable Banking reaches {len(banks)} {args.country} "
           f"{args.psu_type} institutions.\n")

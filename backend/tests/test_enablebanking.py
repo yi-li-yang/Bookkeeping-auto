@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 
 from backend.integrations.enablebanking import (
     ASPSP,
+    EBApplicationInactive,
     EBAuthError,
     EBConsentExpired,
     EBError,
@@ -152,6 +153,38 @@ def test_bad_application_credentials_raise_ebautherror(keypair):
         with pytest.raises(EBAuthError) as excinfo:
             client.aspsps()
     assert "EB_APPLICATION_ID" in str(excinfo.value)
+
+
+def test_inactive_application_is_not_reported_as_a_credentials_problem(keypair):
+    """
+    A freshly registered application 403s on every endpoint until an account is
+    linked. The JWT verified fine, so blaming the key sends you debugging a
+    working credential -- the real fix is to link an account.
+    """
+    def handler(request):
+        return httpx.Response(403, json={"code": 403,
+                                         "message": "Application is not active"})
+
+    with make_client(keypair, handler) as client:
+        with pytest.raises(EBApplicationInactive) as excinfo:
+            client.aspsps()
+
+    message = str(excinfo.value)
+    assert "Link at least one account" in message
+    assert "Credentials are fine" in message
+
+
+def test_inactive_check_wins_over_the_consent_path_heuristic(keypair):
+    """
+    /accounts/... would otherwise be read as an expired consent, which is the
+    wrong advice before the application has ever been activated.
+    """
+    def handler(request):
+        return httpx.Response(403, json={"message": "Application is not active"})
+
+    with make_client(keypair, handler) as client:
+        with pytest.raises(EBApplicationInactive):
+            client.account_transactions("acct-1")
 
 
 def test_expired_consent_is_distinguished_from_bad_credentials(keypair):
