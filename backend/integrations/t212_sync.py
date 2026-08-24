@@ -44,12 +44,77 @@ _ACCOUNT_LABELS = {
     "stocks_isa": "Trading 212 Stocks ISA",
 }
 
+# Trading 212 returns transaction amounts unsigned -- a deposit, an interest
+# payment and a withdrawal all arrive positive -- so direction comes from the
+# type. Only types whose direction is unambiguous are forced; anything else
+# keeps the sign the API gave, since guessing would corrupt the cash flow.
+_INCOME_TYPES = {"DEPOSIT", "INTEREST_ON_FREE_CASH", "INTEREST", "DIVIDEND"}
+_EXPENSE_TYPES = {"WITHDRAW", "WITHDRAWAL", "FEE", "TAX", "CHARGE", "COMMISSION"}
+
 _TRANSACTION_CATEGORIES = {
     "DEPOSIT": "Transfers",
     "WITHDRAW": "Transfers",
+    "WITHDRAWAL": "Transfers",
     "TRANSFER": "Transfers",
     "FEE": "Investment Fees",
+    "COMMISSION": "Investment Fees",
+    "CHARGE": "Investment Fees",
+    "TAX": "Investment Fees",
+    "INTEREST_ON_FREE_CASH": "Interest",
+    "INTEREST": "Interest",
+    "DIVIDEND": "Dividends",
 }
+
+
+def _signed_amount(tx_type: str, amount: float) -> float:
+    """Apply direction from the transaction type, trusting the API where unsure."""
+    if tx_type in _INCOME_TYPES:
+        return abs(amount)
+    if tx_type in _EXPENSE_TYPES:
+        return -abs(amount)
+    return amount  # e.g. TRANSFER, which can go either way
+
+
+def _detect_account_by_isin(db: Session, positions: list[dict]) -> tuple[str, float, float] | None:
+    """
+    Identify an account by overlapping live ISINs against stored snapshots.
+
+    Returns (account_name, score, runner_up_score), or None when there is not
+    enough evidence to be confident.
+    """
+    live_isins = {
+        (p.get("instrument") or {}).get("isin")
+        for p in positions
+        if (p.get("instrument") or {}).get("isin")
+    }
+    if not live_isins:
+        return None
+
+    scores: list[tuple[float, str]] = []
+    for (name,) in db.query(InvestmentHolding.account_name).distinct().all():
+        known = {
+            r[0]
+            for r in db.query(InvestmentHolding.isin)
+            .filter(InvestmentHolding.account_name == name)
+            .filter(InvestmentHolding.isin.isnot(None))
+            .distinct()
+            .all()
+        }
+        if known:
+            scores.append((len(live_isins & known) / len(live_isins), name))
+
+    if not scores:
+        return None
+
+    scores.sort(reverse=True)
+    best_score, best_name = scores[0]
+    runner_up = scores[1][0] if len(scores) > 1 else 0.0
+
+    # Invest and Stocks ISA legitimately share popular tickers, so require both
+    # a strong absolute match and a clear margin over the alternative.
+    if best_score >= 0.5 and best_score >= runner_up * 1.3:
+        return best_name, best_score, runner_up
+    return None
 
 
 def _account_label(
@@ -58,62 +123,84 @@ def _account_label(
     """
     Work out which Trading 212 account a key pair belongs to.
 
-    The env var name is only a hint, and /equity/account/summary does not say
-    whether an account is Invest or Stocks ISA. So when the hint is unusable we
-    identify the account by overlapping the live positions' ISINs against the
-    historical snapshots already in the database, which do carry the account
-    name. Falling back to the numeric account id keeps two unlabelled keys
-    distinguishable rather than silently merging them.
+    Trading 212 does not tell you which account a key is for when you create it,
+    and /equity/account/summary does not report Invest vs Stocks ISA either. So
+    the env var name is only the user's guess and cannot be trusted on its own.
+
+    Evidence wins: when live positions match a stored snapshot convincingly we
+    use that, and say so loudly if it contradicts the env var name. The hint is
+    the fallback, not the authority.
     """
-    if account.slug in _ACCOUNT_LABELS:
-        return _ACCOUNT_LABELS[account.slug]
+    detected = _detect_account_by_isin(db, positions)
+    hinted = _ACCOUNT_LABELS.get(account.slug)
 
-    live_isins = {
-        (p.get("instrument") or {}).get("isin")
-        for p in positions
-        if (p.get("instrument") or {}).get("isin")
-    }
-    if live_isins:
-        scores: list[tuple[float, str]] = []
-        known_accounts = [
-            r[0]
-            for r in db.query(InvestmentHolding.account_name).distinct().all()
-        ]
-        for name in known_accounts:
-            known_isins = {
-                r[0]
-                for r in db.query(InvestmentHolding.isin)
-                .filter(InvestmentHolding.account_name == name)
-                .filter(InvestmentHolding.isin.isnot(None))
-                .distinct()
-                .all()
-            }
-            if known_isins:
-                scores.append((len(live_isins & known_isins) / len(live_isins), name))
-
-        scores.sort(reverse=True)
-        if scores:
-            best_score, best_name = scores[0]
-            runner_up = scores[1][0] if len(scores) > 1 else 0.0
-            # Invest and ISA legitimately share popular tickers, so require both
-            # a strong absolute match and a clear margin over the alternative.
-            if best_score >= 0.5 and best_score >= runner_up * 1.3:
-                logger.info(
-                    "Matched Trading 212 key %r to %r (%.0f%% ISIN overlap, "
-                    "runner-up %.0f%%)",
-                    account.slug, best_name, best_score * 100, runner_up * 100,
-                )
-                return best_name
+    if detected:
+        name, score, runner_up = detected
+        if hinted and hinted != name:
             logger.warning(
-                "Could not confidently match Trading 212 key %r to a known account "
-                "(best %r at %.0f%%, runner-up %.0f%%). Labelling by account id; "
-                "set T212_API_KEY_INVEST / T212_API_KEY_STOCKS_ISA to name it "
-                "explicitly.",
-                account.slug, best_name, best_score * 100, runner_up * 100,
+                "Trading 212 key is stored under %r (implying %r), but its live "
+                "positions match %r far better (%.0f%% ISIN overlap vs %.0f%%). "
+                "Using %r. Rename the env var to match, or the two accounts will "
+                "be mislabelled.",
+                account.slug, hinted, name, score * 100, runner_up * 100, name,
             )
+        else:
+            logger.info(
+                "Matched Trading 212 key %r to %r (%.0f%% ISIN overlap, "
+                "runner-up %.0f%%)",
+                account.slug, name, score * 100, runner_up * 100,
+            )
+        return name
+
+    if hinted:
+        return hinted
 
     account_id = summary.get("id")
     return f"Trading 212 {account_id}" if account_id else "Trading 212"
+
+
+def normalise_ticker(ticker: str) -> str:
+    """
+    Reduce a Trading 212 ticker to the bare symbol.
+
+    Two formats appear in practice:
+        AAPL_US_EQ  -> AAPL     (SYMBOL_EXCHANGE_TYPE)
+        BTIPl_EQ    -> BTIP     (SYMBOL+exchange-letter_TYPE, London listings)
+
+    The trailing lowercase letter on London lines is an exchange marker, not
+    part of the symbol, and the PDF statements omit it. Only lowercase suffixes
+    are stripped, so GOOGL and PLTR keep their uppercase trailing letters.
+    """
+    symbol = (ticker or "").split("_")[0]
+    while len(symbol) > 1 and symbol[-1].islower():
+        symbol = symbol[:-1]
+    return symbol or ticker
+
+
+def _instrument_name(db: Session, isin: str | None, ticker: str) -> str:
+    """
+    Prefer a name already used for this ISIN so a holding stays one series.
+
+    Trading 212 still returns the legacy `FB` ticker for Meta (US30303M1027),
+    while the statement parser recorded `META`. Same holding, and without this
+    it would split into two lines on the history chart.
+    """
+    symbol = normalise_ticker(ticker)
+    if isin:
+        existing = (
+            db.query(InvestmentHolding.instrument)
+            .filter(InvestmentHolding.isin == isin)
+            .filter(InvestmentHolding.instrument.isnot(None))
+            .first()
+        )
+        if existing and existing[0] and existing[0] != symbol:
+            logger.info(
+                "Instrument %s (%s) already stored as %s; keeping the stored name "
+                "so the series stays continuous.",
+                symbol, isin, existing[0],
+            )
+            return existing[0]
+    return symbol
 
 
 def _derive_fx_rate(position: dict, value_gbp: float | None) -> float | None:
@@ -169,6 +256,7 @@ def _write_holdings(
     ).delete(synchronize_session=False)
 
     written = 0
+    positions_total = 0.0
     for position in positions:
         instrument = position.get("instrument") or {}
         ticker = instrument.get("ticker") or ""
@@ -181,8 +269,7 @@ def _write_holdings(
             InvestmentHolding(
                 report_date=report_date,
                 account_name=account_name,
-                # "AAPL_US_EQ" -> "AAPL", matching the PDF path's convention.
-                instrument=ticker.split("_")[0] or ticker,
+                instrument=_instrument_name(db, instrument.get("isin"), ticker),
                 isin=instrument.get("isin"),
                 currency=instrument.get("currency"),
                 quantity=position.get("quantity"),
@@ -196,8 +283,9 @@ def _write_holdings(
             )
         )
         written += 1
+        positions_total += value_gbp
 
-    cash = _cash_value(summary)
+    cash = _cash_value(summary, positions_total=positions_total)
     if cash is not None:
         # cost_gbp / return_gbp stay NULL on purpose: _return_pct already handles
         # None, /performance filters rows without a return, and SQL SUM skips
@@ -218,18 +306,48 @@ def _write_holdings(
     return written
 
 
-def _cash_value(summary: dict) -> float | None:
+def _cash_value(summary: dict, positions_total: float | None = None) -> float | None:
     """
-    Cash as a residual: totalValue - investments.currentValue.
+    Cash as a residual: totalValue minus the position values actually stored.
 
-    Derived this way rather than summing availableToTrade + reservedForOrders +
-    inPies so that sum(value_gbp) equals Trading 212's own totalValue exactly.
+    Deriving it against the stored positions -- rather than against
+    investments.currentValue, or by summing availableToTrade + reservedForOrders
+    + inPies -- is what makes sum(value_gbp) equal Trading 212's own totalValue
+    exactly. account/summary and positions are two separate calls a second or so
+    apart, so in a moving market their figures come from slightly different
+    instants; absorbing that drift into cash keeps the portfolio total right,
+    which is what net worth depends on.
     """
     total = summary.get("totalValue")
-    invested = (summary.get("investments") or {}).get("currentValue")
-    if total is None or invested is None:
+    if total is None:
         return None
-    cash = round(total - invested, 2)
+
+    if positions_total is None:
+        invested = (summary.get("investments") or {}).get("currentValue")
+        if invested is None:
+            return None
+        positions_total = invested
+
+    cash = round(total - positions_total, 2)
+
+    # Sanity-check against what Trading 212 reports as cash. A large gap means
+    # something other than price drift is going on and is worth surfacing.
+    reported = summary.get("cash") or {}
+    if reported:
+        reported_total = sum(
+            v for v in (
+                reported.get("availableToTrade"),
+                reported.get("reservedForOrders"),
+                reported.get("inPies"),
+            ) if isinstance(v, (int, float))
+        )
+        if reported_total and abs(cash - reported_total) > max(1.0, reported_total * 0.01):
+            logger.warning(
+                "Derived cash %.2f differs from reported cash %.2f by more than 1%%; "
+                "storing the derived figure so the portfolio total reconciles.",
+                cash, reported_total,
+            )
+
     return cash if abs(cash) >= 0.01 else None
 
 
@@ -270,20 +388,23 @@ def _write_transactions(
         if amount is None or not date_time:
             continue
 
-        # Defensive: normalise sign from the type rather than trusting it.
-        magnitude = abs(float(amount))
-        signed = magnitude if tx_type == "DEPOSIT" else -magnitude
+        if tx_type not in _TRANSACTION_CATEGORIES:
+            logger.warning(
+                "Unmapped Trading 212 transaction type %r (amount %s); keeping the "
+                "API's sign and filing it as Investment Other.",
+                tx_type, amount,
+            )
+        signed = _signed_amount(tx_type, float(amount))
 
-        description = f"Trading 212 {tx_type.title()}"
-        if item.get("reference"):
-            description = f"{description} - {item['reference']}"
+        # References are opaque UUIDs, so they add noise rather than meaning.
+        description = f"Trading 212 {tx_type.replace('_', ' ').title()}"
 
         db.add(
             Transaction(
                 date=date_time[:10],
                 description=description,
                 amount=signed,
-                category=_TRANSACTION_CATEGORIES.get(tx_type, "Transfers"),
+                category=_TRANSACTION_CATEGORIES.get(tx_type, "Investment Other"),
                 account_name=account_name,
                 account_type="investment",
                 source_file_id=source_file.id,

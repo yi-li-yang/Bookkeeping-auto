@@ -323,3 +323,179 @@ def test_one_bad_account_does_not_stop_the_other(db, monkeypatch):
     assert statuses["trading212:invest"] == "ok"
     # The good account still wrote its holdings.
     assert db.query(InvestmentHolding).count() == 3
+
+
+# -- ticker normalisation and instrument identity ---------------------------
+
+@pytest.mark.parametrize("raw,expected", [
+    ("AAPL_US_EQ", "AAPL"),      # SYMBOL_EXCHANGE_TYPE
+    ("BTIPl_EQ", "BTIP"),        # London listing: trailing lowercase marker
+    ("VUSAl_EQ", "VUSA"),
+    ("SGLNl_EQ", "SGLN"),
+    ("XLKQl_EQ", "XLKQ"),
+    ("GOOGL_US_EQ", "GOOGL"),    # trailing L is uppercase - must be kept
+    ("PLTR_US_EQ", "PLTR"),
+    ("TSLA_US_EQ", "TSLA"),
+])
+def test_normalise_ticker_strips_only_lowercase_exchange_markers(raw, expected):
+    assert t212_sync.normalise_ticker(raw) == expected
+
+
+def test_existing_name_for_an_isin_wins_so_series_stay_continuous(db):
+    """Trading 212 returns legacy 'FB' for Meta; the statement parser said 'META'."""
+    sf = SourceFile(filename="s.pdf", file_type="pdf", status="done")
+    db.add(sf)
+    db.flush()
+    db.add(InvestmentHolding(
+        report_date="2026-03-11", account_name="Trading 212 Stocks ISA",
+        instrument="META", isin="US30303M1027", value_gbp=100.0, source_file_id=sf.id,
+    ))
+    db.commit()
+
+    assert t212_sync._instrument_name(db, "US30303M1027", "FB_US_EQ") == "META"
+    # An unknown ISIN just gets the normalised symbol.
+    assert t212_sync._instrument_name(db, "US0378331005", "AAPL_US_EQ") == "AAPL"
+
+
+# -- account detection ------------------------------------------------------
+
+def _seed_two_accounts(db):
+    sf = SourceFile(filename="s.pdf", file_type="pdf", status="done")
+    db.add(sf)
+    db.flush()
+    # ISA holds the VUSA/SGLN pair; Invest holds AVGO/MSTR. TSLA is in both.
+    for name, isins in {
+        "Trading 212 Stocks ISA": ["IE00B3XXRP09", "IE00B4ND3602", "US88160R1014"],
+        "Trading 212 Invest": ["US11135F1012", "US5949724083", "US88160R1014"],
+    }.items():
+        for isin in isins:
+            db.add(InvestmentHolding(
+                report_date="2026-03-11", account_name=name, instrument=isin[:4],
+                isin=isin, value_gbp=10.0, source_file_id=sf.id,
+            ))
+    db.commit()
+
+
+def _positions_with(isins):
+    return [{"instrument": {"ticker": "X_US_EQ", "isin": i}} for i in isins]
+
+
+def test_isin_overlap_identifies_the_right_account(db):
+    _seed_two_accounts(db)
+    detected = t212_sync._detect_account_by_isin(
+        db, _positions_with(["IE00B3XXRP09", "IE00B4ND3602", "US88160R1014"])
+    )
+    assert detected is not None
+    assert detected[0] == "Trading 212 Stocks ISA"
+
+
+def test_detection_declines_when_the_match_is_ambiguous(db):
+    _seed_two_accounts(db)
+    # Only the shared holding: no basis to choose between the two accounts.
+    assert t212_sync._detect_account_by_isin(db, _positions_with(["US88160R1014"])) is None
+
+
+def test_detection_overrides_a_wrong_env_var_hint(db):
+    """
+    Trading 212 does not say which account a key belongs to, so the env var name
+    is a guess. Evidence must win over it.
+    """
+    _seed_two_accounts(db)
+    mislabelled = T212Account(slug="invest", api_key_id="k", api_secret="s")
+    label = t212_sync._account_label(
+        db, mislabelled, {"id": 42},
+        _positions_with(["IE00B3XXRP09", "IE00B4ND3602", "US88160R1014"]),
+    )
+    assert label == "Trading 212 Stocks ISA"
+
+
+def test_hint_is_used_when_there_is_nothing_to_detect_against(db):
+    account = T212Account(slug="invest", api_key_id="k", api_secret="s")
+    assert t212_sync._account_label(db, account, {"id": 42}, []) == "Trading 212 Invest"
+
+
+def test_falls_back_to_account_id_with_no_hint_and_no_evidence(db):
+    account = T212Account(slug="legacy", api_key_id="k", api_secret="s")
+    assert t212_sync._account_label(db, account, {"id": 42}, []) == "Trading 212 42"
+
+
+# -- transaction sign and category mapping ----------------------------------
+
+@pytest.mark.parametrize("tx_type,raw,expected", [
+    # Trading 212 sends every amount positive; direction comes from the type.
+    ("DEPOSIT", 15000.0, 15000.0),
+    ("INTEREST_ON_FREE_CASH", 1.45, 1.45),     # income, not an outgoing
+    ("INTEREST", 2.0, 2.0),
+    ("DIVIDEND", 3.0, 3.0),
+    ("WITHDRAW", 250.0, -250.0),
+    ("FEE", 1.50, -1.50),
+    ("TAX", 4.0, -4.0),
+    # Ambiguous direction: keep whatever the API said rather than guessing.
+    ("TRANSFER", 5000.0, 5000.0),
+    ("TRANSFER", -5000.0, -5000.0),
+    ("SOMETHING_NEW", -7.0, -7.0),
+])
+def test_amount_direction_comes_from_type_not_a_blanket_rule(tx_type, raw, expected):
+    assert t212_sync._signed_amount(tx_type, raw) == expected
+
+
+def test_interest_is_income_and_categorised_as_interest(db, monkeypatch):
+    """346 of this user's 350 records are daily interest; a sign error here
+    would invert the entire investment cash flow."""
+    items = [{"type": "INTEREST_ON_FREE_CASH", "amount": 1.45, "currency": "GBP",
+              "dateTime": "2026-08-24T01:05:38.845Z", "reference": "ref-1"}]
+
+    def handler(request):
+        path = request.url.path
+        if path.endswith("/account/summary"):
+            return httpx.Response(200, json=SUMMARY)
+        if path.endswith("/positions"):
+            return httpx.Response(200, json=[])
+        if "history/transactions" in path:
+            return httpx.Response(200, json={"items": items, "nextPagePath": None})
+        return httpx.Response(200, json={"items": [], "nextPagePath": None})
+
+    patch_client(monkeypatch, handler)
+    t212_sync.sync_account(db, ACCOUNT, include_history=True)
+
+    tx = db.query(Transaction).one()
+    assert tx.amount == 1.45           # positive: it is income
+    assert tx.category == "Interest"
+    assert tx.description == "Trading 212 Interest On Free Cash"
+
+
+def test_cash_absorbs_price_drift_so_the_total_reconciles_exactly(db, monkeypatch):
+    """
+    account/summary and positions are separate calls, so in a moving market
+    their figures come from different instants. Cash is the residual against the
+    positions actually stored, which keeps the portfolio total exact.
+    """
+    summary = {
+        "id": 1, "currency": "GBP", "totalValue": 1000.0,
+        "cash": {"availableToTrade": 100.0, "reservedForOrders": 0, "inPies": 0},
+        # Deliberately inconsistent with the positions below, as happens live.
+        "investments": {"currentValue": 900.0},
+    }
+    positions = [{
+        "instrument": {"ticker": "X_US_EQ", "isin": "US1", "currency": "GBP"},
+        "quantity": 1, "currentPrice": 100.0, "averagePricePaid": 90.0,
+        "walletImpact": {"totalCost": 90.0, "currentValue": 893.44,
+                         "unrealizedProfitLoss": 3.44},
+    }]
+
+    def handler(request):
+        p = request.url.path
+        if p.endswith("/account/summary"):
+            return httpx.Response(200, json=summary)
+        if p.endswith("/positions"):
+            return httpx.Response(200, json=positions)
+        return httpx.Response(200, json={"items": [], "nextPagePath": None})
+
+    patch_client(monkeypatch, handler)
+    t212_sync.sync_account(db, ACCOUNT, include_history=False)
+
+    total = sum(h.value_gbp for h in db.query(InvestmentHolding).all())
+    assert total == pytest.approx(1000.0, abs=0.01)
+
+    cash = db.query(InvestmentHolding).filter_by(instrument="CASH").one()
+    assert cash.value_gbp == pytest.approx(1000.0 - 893.44, abs=0.01)

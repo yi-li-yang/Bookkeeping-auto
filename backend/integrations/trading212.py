@@ -34,6 +34,14 @@ RATE_LIMITS: dict[str, float] = {
 }
 DEFAULT_MIN_INTERVAL = 1.2
 
+# Rate limits are per ACCOUNT, not per endpoint, and Trading 212 throttles
+# bursts even when each endpoint is individually within budget. Without this
+# floor, a sync firing summary -> positions -> transactions -> dividends
+# back-to-back hits four different endpoints with no gap and gets a 403.
+# 50 req/min works out to exactly 1.2s, which is too tight to sustain across
+# many pages -- observed 429s at that rate. A little headroom avoids them.
+GLOBAL_MIN_INTERVAL = 1.4
+
 # The docs describe x-ratelimit-reset as a unix timestamp, but that is not
 # verified; clamp whatever we compute so a misread header cannot sleep forever.
 _MAX_BACKOFF_SECONDS = 60.0
@@ -97,6 +105,7 @@ class Trading212Client:
         self.env = env
         self._sleep = sleep
         self._last_call: dict[str, float] = {}
+        self._last_any_call: float | None = None
         self._client = httpx.Client(
             base_url=base_url(env),
             timeout=timeout,
@@ -118,15 +127,30 @@ class Trading212Client:
     # -- internals ---------------------------------------------------------
 
     def _pace(self, path: str) -> None:
-        """Sleep so consecutive calls to the same endpoint respect its limit."""
+        """
+        Sleep so requests stay evenly spaced.
+
+        Two constraints, both required: the per-endpoint interval, and a global
+        floor between any two requests. The limits are per account, so hitting
+        four different endpoints in quick succession is still a burst.
+        """
         key = path.split("?")[0]
         interval = _min_interval(key.replace(API_PREFIX, "", 1))
+
+        waits = []
         previous = self._last_call.get(key)
         if previous is not None:
-            wait = interval - (time.monotonic() - previous)
-            if wait > 0:
-                self._sleep(wait)
-        self._last_call[key] = time.monotonic()
+            waits.append(interval - (time.monotonic() - previous))
+        if self._last_any_call is not None:
+            waits.append(GLOBAL_MIN_INTERVAL - (time.monotonic() - self._last_any_call))
+
+        wait = max(waits) if waits else 0
+        if wait > 0:
+            self._sleep(wait)
+
+        now = time.monotonic()
+        self._last_call[key] = now
+        self._last_any_call = now
 
     def _retry_after(self, response: httpx.Response) -> float:
         reset = response.headers.get("x-ratelimit-reset")
@@ -148,12 +172,21 @@ class Trading212Client:
             self._pace(path)
             response = self._client.get(path, params=params)
 
-            if response.status_code in (401, 403):
+            if response.status_code == 401:
                 raise T212AuthError(
                     f"Trading 212 rejected the credentials for {self.account.slug!r} "
-                    f"(HTTP {response.status_code}). API keys are environment-specific: "
-                    f"a {self.env!r} key cannot be used against the other environment. "
-                    "Also check the key has the required permissions."
+                    f"(HTTP 401). API keys are environment-specific: a {self.env!r} "
+                    f"key cannot be used against the other environment. Check the key "
+                    "id and secret are both from the same generation."
+                )
+
+            if response.status_code == 403:
+                raise T212AuthError(
+                    f"Trading 212 refused {path} for {self.account.slug!r} (HTTP 403). "
+                    "Either the API key lacks the permission this endpoint needs "
+                    "(check the key's Permissions list in the app), or requests were "
+                    "sent too fast - limits are per account, so bursts across "
+                    "different endpoints count too."
                 )
 
             if response.status_code == 429:
@@ -208,8 +241,14 @@ class Trading212Client:
         Follow cursor pagination via nextPagePath.
 
         The transactions endpoint rejects a cursor on the first request - only
-        `limit` is allowed - so page one is sent bare and every later page
-        follows nextPagePath verbatim rather than being reconstructed.
+        `limit` is allowed - so page one is sent bare.
+
+        nextPagePath is not consistent across endpoints: history/dividends
+        returns a full path ("/api/v0/equity/history/dividends?limit=50&..."),
+        while history/transactions returns only the query string
+        ("limit=50&cursor=...&time=..."). Both forms are handled rather than
+        assuming either, because assuming the full-path form sends the query
+        string as if it were a path and earns a 403.
         """
         items: list[dict] = []
         next_path: str | None = None
@@ -218,7 +257,13 @@ class Trading212Client:
             if page == 0:
                 payload = self._get(f"{API_PREFIX}{path}", params={"limit": limit})
             else:
-                payload = self._get(next_path)  # type: ignore[arg-type]
+                assert next_path is not None
+                if next_path.startswith("/"):
+                    request_path = next_path
+                else:
+                    query = next_path.lstrip("?")
+                    request_path = f"{API_PREFIX}{path}?{query}"
+                payload = self._get(request_path)
 
             if not isinstance(payload, dict):
                 break

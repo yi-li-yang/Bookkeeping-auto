@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from backend.integrations.trading212 import (
+    GLOBAL_MIN_INTERVAL,
     RATE_LIMITS,
     T212Account,
     T212AuthError,
@@ -100,6 +101,7 @@ def test_repeated_calls_to_same_endpoint_are_paced():
 
 
 def test_different_endpoints_are_paced_independently():
+    """Distinct endpoints do not inherit each other's per-endpoint interval."""
     def handler(request):
         if "positions" in request.url.path:
             return httpx.Response(200, json=[])
@@ -110,22 +112,22 @@ def test_different_endpoints_are_paced_independently():
         client.account_summary()
         client.positions()
 
-    # Two different endpoints, neither repeated: nothing to wait for.
-    assert sleep.calls == []
+    # Only the global floor applies, not account/summary's 5s interval.
+    assert len(sleep.calls) == 1
+    assert sleep.calls[0] == pytest.approx(GLOBAL_MIN_INTERVAL, abs=0.1)
 
 
 # -- error mapping ---------------------------------------------------------
 
-@pytest.mark.parametrize("status", [401, 403])
-def test_auth_failures_raise_t212autherror(status):
+def test_unauthorized_raises_t212autherror_naming_the_environment():
     def handler(request):
-        return httpx.Response(status, json={"error": "nope"})
+        return httpx.Response(401, json={"error": "nope"})
 
     with make_client(handler) as client:
         with pytest.raises(T212AuthError) as excinfo:
             client.account_summary()
 
-    # The message must be actionable: environment mismatch is the usual cause.
+    # 401 is a credentials problem; environment mismatch is the usual cause.
     assert "environment-specific" in str(excinfo.value)
 
 
@@ -281,3 +283,41 @@ def test_positions_returns_empty_list_when_payload_is_not_a_list():
 
     with make_client(handler) as client:
         assert client.positions() == []
+
+
+def test_different_endpoints_still_respect_a_global_floor():
+    """
+    Rate limits are per account, so four different endpoints fired back-to-back
+    is still a burst. This is what produced a live 403 before the global floor
+    was added -- per-endpoint pacing alone let them all through with no gap.
+    """
+    def handler(request):
+        if "positions" in request.url.path:
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json={"items": [], "nextPagePath": None})
+
+    sleep = RecordingSleep()
+    with make_client(handler, sleep=sleep) as client:
+        client.positions()
+        client.history_transactions()
+        client.history_dividends()
+
+    # Three distinct endpoints, so per-endpoint pacing contributes nothing;
+    # every gap here comes from the global floor.
+    assert len(sleep.calls) == 2
+    for wait in sleep.calls:
+        assert wait == pytest.approx(GLOBAL_MIN_INTERVAL, abs=0.1)
+
+
+def test_forbidden_is_reported_as_permissions_or_burst_not_environment():
+    def handler(request):
+        return httpx.Response(403)
+
+    with make_client(handler) as client:
+        with pytest.raises(T212AuthError) as excinfo:
+            client.positions()
+
+    message = str(excinfo.value)
+    assert "permission" in message.lower()
+    # The environment-mismatch advice belongs to 401 and would mislead here.
+    assert "environment-specific" not in message
