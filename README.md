@@ -18,6 +18,16 @@ cash flow projections and what-if planning.
 Runs as a single local web app. No Docker, no cloud, no account — your data
 stays in a SQLite file on your machine.
 
+## Agents in Claude Duet
+
+Yili's finance channel in Claude Duet runs this repository's code on a
+schedule. Agents turn statements from mail or Drive into rows with
+`backend/agent_tools/statement_to_ledger.py` and save them through the
+[yili-mcp-connector](https://github.com/yi-li-yang/yili-mcp-connector)
+connector, which also serves Trading 212, Monzo and pension values. The data
+never comes back into this repository. See [AGENTS.md](AGENTS.md) for the
+rules and [agents/routines.md](agents/routines.md) for what each routine does.
+
 ## Requirements
 
 - Python 3.11 or newer

@@ -204,3 +204,12 @@ cards.json
 # Any .env variant (backups, .env.local) -- but keep the committed template
 .env.*
 !.env.example
+
+# Statements and exports never belong in this repository, wherever they land
+*.pdf
+*.csv
+*.xlsx
+*.ofx
+*.qif
+*.ledger.json
+statements/
